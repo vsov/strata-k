@@ -30,4 +30,4 @@ jobs:
     if: false # TODO(INFRA-11): flip on once souffle is pinned/installed
     steps:
       - uses: actions/checkout@v4
-      - run: echo "TODO(INFRA-3/4/5): Core-IR -> .dl differential vs Soufflé"
+      - run: echo "souffle differential stub — see crates/strata-cli/tests/souffle_diff.rs"
