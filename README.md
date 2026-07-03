@@ -171,8 +171,9 @@ reduct — both the slow, exact oracles a compiled/GPU method must later match.
 
 `book/` holds *Programs That Know Why* — a short book on logic programming in the
 age of LLMs and the design of Strata/K, built with [mdBook](https://rust-lang.github.io/mdBook/).
+📖 **Read it online: <https://vsov.github.io/strata-k/>**
 **Work in progress.** Every runnable listing lives in `examples/book/` and runs
-under the current `strata` CLI. Text is licensed CC BY-SA 4.0; example code is
+under the current `strata` CLI (CI-checked — see `crates/strata-cli/tests/book_listings.rs`). Text is licensed CC BY-SA 4.0; example code is
 MIT/Apache like the rest of the repo.
 
 ```sh
