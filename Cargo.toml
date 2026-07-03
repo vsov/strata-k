@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/strata-ir",
+    "crates/strata-front",
+    "crates/strata-check",
+    "crates/strata-eval",
+    "crates/strata-asp",
+    "crates/strata-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vsov/strata-k"
+
+# Pre-declared for the IR-1 task to switch on (`serde.workspace = true`).
+# Declared here does not fetch anything until a member actually references it,
+# so the Slice-0 skeleton stays dependency-free and builds offline.
+[workspace.dependencies]
+strata-ir = { path = "crates/strata-ir" }
+strata-front = { path = "crates/strata-front" }
+strata-check = { path = "crates/strata-check" }
+strata-eval = { path = "crates/strata-eval" }
+strata-asp = { path = "crates/strata-asp" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+logos = "0.14"
+
+[workspace.lints.rust]
+unsafe_code = "forbid" # relaxed per-crate when strata-gpu/device-side work arrives
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"

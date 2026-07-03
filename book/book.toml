@@ -1,0 +1,9 @@
+[book]
+title = "Programs That Know Why"
+description = "Logic programming in the age of LLMs, and a new language built for it"
+authors = ["Viktor"]
+language = "en"
+src = "en"
+
+[build]
+create-missing = false

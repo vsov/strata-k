@@ -1,0 +1,15 @@
+[package]
+name = "strata-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The reference interpreter — eternal differential oracle (I5). Consumes Core-IR
+# from strata-ir (IR-6); does NOT depend on strata-check (eval walks hand-written
+# Core-IR before the checker exists — IR-first, D15).
+[dependencies]
+strata-ir.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+% Chapter 8: position selection under conflicting mandates.
+@asp.
+domain pos.
+
+pred candidate(pos): Bool.
+pred take(pos): Bool.
+pred skip(pos): Bool.
+pred conflict(pos, pos): Bool.
+pred viol(): Bool.
+
+% Each candidate position is independently taken or skipped.
+take(P) :- candidate(P), not skip(P).
+skip(P) :- candidate(P), not take(P).
+
+% Mandates: these pairs may not be held together.
+conflict(gas_futures, carbon_credits).
+conflict(carbon_credits, gas_futures).
+
+% No self-consistent world may hold a conflicting pair.
+viol() :- take(X), take(Y), conflict(X, Y), not viol().
+
+candidate(gas_futures).
+candidate(carbon_credits).
+candidate(fx_swap).

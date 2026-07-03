@@ -1,0 +1,11 @@
+% Answer-set programming: independently place each node in or out.
+@asp.
+pred node(node): Bool.
+pred in(node): Bool.
+pred out(node): Bool.
+
+node(x).
+node(y).
+
+in(N) :- node(N), not out(N).
+out(N) :- node(N), not in(N).

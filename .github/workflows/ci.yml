@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Slice 0 exit criterion: green workspace (build + test + fmt + clippy).
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace
+
+  # INFRA-11: Soufflé is required only by the differential (Bool) jobs.
+  # Non-Soufflé exit harnesses (INFRA-6/7/8) run in `build` above.
+  # This job is wired here as a stub so the dependency is documented from day one.
+  souffle-diff:
+    runs-on: ubuntu-latest
+    if: false # TODO(INFRA-11): flip on once souffle is pinned/installed
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "TODO(INFRA-3/4/5): Core-IR -> .dl differential vs Soufflé"

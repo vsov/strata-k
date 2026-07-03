@@ -1,0 +1,5 @@
+pred edge(node, node): Bool.
+pred path(node, node): Bool.
+input edge from "edges.tsv".
+path(X, Y) :- edge(X, Y).
+path(X, Z) :- edge(X, Y), path(Y, Z).

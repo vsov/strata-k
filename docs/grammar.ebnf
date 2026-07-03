@@ -1,0 +1,63 @@
+(* Strata/K surface grammar — source of truth for strata-front. [FRONT-1, D8]
+
+   Priority: optimized for LLM writing (D3). Datalog `:-`, mandatory predicate
+   signatures, Prolog lexical convention (Var = Uppercase/_-leading, const =
+   lowercase). The WHOLE language surface is grammatical (D5); constructs outside
+   Phase-0 execution parse into valid High-IR and then get a stable
+   "not implemented in Phase 0" diagnostic — they are never syntax errors.
+
+   Surface is a projection of High-IR (D2): parse(surface) -> High-IR, and the
+   canonical printer is the inverse on canonical form. *)
+
+program      = { item } ;
+item         = domain_decl | pred_decl | neural_decl | rule | fact | input_decl
+             | query | pragma ;
+
+(* --- declarations --- *)
+domain_decl  = "domain" , const_ident , "." ;
+pred_decl    = "pred" , const_ident , "(" , [ arg_type { "," , arg_type } ] , ")" ,
+               ":" , annotation , { effect } , "." ;
+arg_type     = const_ident        (* a declared domain *)
+             | "int"              (* i64 column / Trop weight source *)
+             | "term" , const_ident ;  (* @terms — parsed, not executed (D5) *)
+annotation   = "Bool" | "Trop" | "Prov" | "Prov_k" ;   (* Prov/Prov_k: not-impl in Phase 0 *)
+effect       = "total" | "partial" | "complete" | "sound_only"
+             | "deterministic" | "stochastic" ;
+
+(* neural predicate — parsed, never executed in Phase 0 (D5) *)
+neural_decl  = "neural" , const_ident , "(" , [ const_ident { "," , const_ident } ] , ")" ,
+               "from" , "model" , string , "." ;
+
+(* --- rules and facts --- *)
+rule         = atom , ":-" , body , "." ;
+body         = literal , { "," , literal } ;
+literal      = [ "not" ] , atom ;
+atom         = const_ident , "(" , [ term { "," , term } ] , ")" ;
+term         = var_ident | const_ident | integer | aggregate ;
+aggregate    = agg_op , "<" , var_ident , ">" ;     (* head-only, e.g. count<Y> *)
+agg_op       = "min" | "max" | "sum" | "count" | "prob_or" ;
+
+fact         = [ annotated ] , atom , "." ;
+annotated    = number , "::" ;   (* integer :: -> Trop weight; float :: -> prob (not-impl, D5) *)
+
+input_decl   = "input" , const_ident , "from" , string , "." ;
+
+(* --- queries — Phase-0 executes only the plain form --- *)
+query        = ( "?" | "?prob" | "?grad" ) , atom , "." ;
+
+(* --- module pragmas — parsed, not executed (D5) --- *)
+pragma       = ( "@terms" | "@asp" ) , "." ;
+
+(* --- lexical --- *)
+var_ident    = ( uppercase | "_" ) , { ident_char } ;
+const_ident  = lowercase , { ident_char } ;   (* also predicate and domain names *)
+ident_char   = letter | digit | "_" ;
+integer      = [ "-" ] , digit , { digit } ;
+number       = integer | ( integer , "." , digit , { digit } ) ;
+string       = '"' , { ? any char except '"' ? } , '"' ;
+comment      = "%" , { ? any char except newline ? } ;   (* trivia; attached to nearest node *)
+
+(* Reserved words (cannot be predicate/domain/variable names): pred, domain,
+   input, from, model, neural, not, int, term, min, max, sum, count, prob_or,
+   Bool, Trop, Prov, Prov_k, total, partial, complete, sound_only,
+   deterministic, stochastic. *)

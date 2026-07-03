@@ -1,0 +1,14 @@
+% Chapter 7 spread: two routes to the same conclusion, sharing one piece of evidence.
+domain firm.
+pred exposed(firm, firm): Bool.
+pred hit(firm, firm): Bool.
+
+hit(X, Y) :- exposed(X, Y).
+hit(X, Z) :- exposed(X, Y), hit(Y, Z).
+
+0.5 :: exposed(apex, brightwater).   % the shared link
+0.75 :: exposed(brightwater, dunlin). % route 1: apex -> brightwater -> dunlin
+0.75 :: exposed(brightwater, cobalt). % route 2: apex -> brightwater -> cobalt -> dunlin
+exposed(cobalt, dunlin).
+
+?prob hit(apex, dunlin).

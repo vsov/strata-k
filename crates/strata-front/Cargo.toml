@@ -1,0 +1,17 @@
+[package]
+name = "strata-front"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Depends only on strata-ir (D14).
+[dependencies]
+strata-ir.workspace = true
+logos.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

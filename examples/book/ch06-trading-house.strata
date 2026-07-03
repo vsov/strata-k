@@ -1,0 +1,34 @@
+% Chapter 6: the trading house — Bool core.
+domain firm.
+
+pred owns(firm, firm): Bool.        % direct ownership stakes
+pred controls(firm, firm): Bool.    % beneficial control, any depth
+pred listed(firm): Bool.            % appears on the sanctions list
+pred counterparty(firm): Bool.      % firms we actually trade with
+pred blocked(firm): Bool.           % barred by the sanctions rule
+pred cleared(firm): Bool.           % free to trade
+pred stake_count(firm, int): Bool.  % how many direct stakes a firm holds
+
+% The regulation, as rules.
+controls(X, Y) :- owns(X, Y).
+controls(X, Z) :- owns(X, Y), controls(Y, Z).
+
+blocked(C) :- counterparty(C), listed(C).
+blocked(C) :- counterparty(C), controls(P, C), listed(P).
+
+cleared(C) :- counterparty(C), not blocked(C).
+
+stake_count(X, count<Y>) :- owns(X, Y).
+
+% The world as we know it today.
+owns(apex, brightwater).
+owns(apex, cobalt).
+owns(brightwater, dunlin).
+owns(cobalt, eiders).
+owns(fenwick, gullwing).
+
+listed(apex).
+
+counterparty(dunlin).
+counterparty(eiders).
+counterparty(gullwing).

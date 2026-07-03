@@ -1,0 +1,23 @@
+[package]
+name = "strata-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "strata"
+path = "src/main.rs"
+
+# The single user-facing entry point (D10): check | run | fmt | ir.
+# Integrates all crates. clap added by CLI-1.
+[dependencies]
+strata-ir.workspace = true
+strata-front.workspace = true
+strata-check.workspace = true
+strata-eval.workspace = true
+strata-asp.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

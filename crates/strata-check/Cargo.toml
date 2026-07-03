@@ -1,0 +1,18 @@
+[package]
+name = "strata-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Sibling of strata-front; depends only on strata-ir (D14). Emits the shared
+# Diagnostic from strata-ir::diag (IR-9), NOT from strata-front.
+[dependencies]
+strata-ir.workspace = true
+
+# Tests parse surface with strata-front (dev-only; not a library dependency).
+[dev-dependencies]
+strata-front.workspace = true
+
+[lints]
+workspace = true

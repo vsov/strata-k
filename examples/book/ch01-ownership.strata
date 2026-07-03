@@ -1,0 +1,11 @@
+% Chapter 1: who ultimately controls whom.
+domain company.
+pred owns(company, company): Bool.
+pred controls(company, company): Bool.
+
+controls(X, Y) :- owns(X, Y).
+controls(X, Z) :- owns(X, Y), controls(Y, Z).
+
+owns(apex, brightwater).
+owns(brightwater, cobalt).
+owns(cobalt, dunlin).

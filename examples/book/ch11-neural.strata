@@ -1,0 +1,3 @@
+domain firm.
+domain label.
+neural flag(firm, label) from model "aml_gnn".

@@ -1,0 +1,23 @@
+% Chapter 9 vignette, repaired generation — one token changed from the draft.
+% Requirement: "Do not clear a trade if any beneficial owner of the
+% counterparty, within two levels of ownership, is on the sanctions list."
+domain firm.
+
+pred owns(firm, firm): Bool.
+pred listed(firm): Bool.
+pred counterparty(firm): Bool.
+pred owner_within2(firm, firm): Bool.
+pred blocked(firm): Bool.
+pred cleared(firm): Bool.
+
+owner_within2(P, C) :- owns(P, C).
+owner_within2(P, C) :- owns(P, M), owns(M, C).
+
+blocked(C) :- counterparty(C), owner_within2(P, C), listed(P).
+
+cleared(C) :- counterparty(C), not blocked(C).
+
+owns(apex, brightwater).
+owns(brightwater, dunlin).
+listed(apex).
+counterparty(dunlin).

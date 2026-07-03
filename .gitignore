@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+.DS_Store
+# Cargo.lock IS committed: this workspace ships a binary (strata-cli).
+
+# Claude Code worktrees / agent scratch (never tracked, never published).
+/.claude/

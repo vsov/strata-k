@@ -1,0 +1,14 @@
+% Chapter 7: same two rules, tropical semiring — cheapest delivery route.
+domain hub.
+
+pred leg(hub, hub): Trop.     % direct transport legs, cost per unit
+pred route(hub, hub): Trop.   % best achievable cost, any number of legs
+
+route(X, Y) :- leg(X, Y).
+route(X, Z) :- leg(X, Y), route(Y, Z).
+
+4 :: leg(rotterdam, gdansk).
+8 :: leg(rotterdam, riga).
+3 :: leg(gdansk, riga).
+5 :: leg(riga, tallinn).
+9 :: leg(gdansk, tallinn).
