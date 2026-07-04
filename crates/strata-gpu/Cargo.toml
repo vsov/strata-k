@@ -1,0 +1,30 @@
+[package]
+name = "strata-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# GPU engine (spec Phase 1, режим A). CUDA kernels launched from Rust via cudarc.
+# The `cuda` feature is OFF by default so the Mac/CI workspace builds without any
+# CUDA toolkit — then the crate compiles to a stub that returns GpuError::NotBuilt.
+# On the GPU box, build/test with `--features cuda`.
+[features]
+default = []
+cuda = ["dep:cudarc"]
+
+[dependencies]
+cudarc = { version = "0.12", default-features = false, features = ["cuda-11080", "driver", "nvrtc", "std"], optional = true }
+
+[dev-dependencies]
+# Independent CPU oracle for the differential test lives inline; no sibling dep.
+
+# GPU kernel launches are inherently `unsafe` (cudarc), so this crate opts out of
+# the workspace-wide `unsafe_code = "forbid"` (the only crate that does — the
+# workspace Cargo.toml anticipates exactly this). Clippy stays at parity.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

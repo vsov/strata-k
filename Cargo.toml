@@ -6,6 +6,9 @@ members = [
     "crates/strata-check",
     "crates/strata-eval",
     "crates/strata-asp",
+    "crates/strata-gpu",
+    "crates/strata-terms",
+    "crates/strata-prob",
     "crates/strata-cli",
 ]
 

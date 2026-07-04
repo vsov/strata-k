@@ -6,6 +6,7 @@
 //! before any parser or checker exists (D15, Slice 2 — the tracer). Bool + Trop
 //! (режим A) in Phase 0 (D5, D6).
 
+pub mod dred;
 pub mod naive;
 pub mod prob;
 pub mod seminaive;

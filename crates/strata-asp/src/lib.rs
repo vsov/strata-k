@@ -21,6 +21,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use strata_ir::high::program::{Atom, Literal, Rule, Term};
 
+pub mod aspif;
+pub mod clasp;
+pub mod heuristic;
+pub mod normalize;
+pub mod simplify;
+pub mod unfounded;
+
 /// A ground constant value (self-contained; no symbol dictionary needed here).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Val {
@@ -84,14 +91,64 @@ impl Interner {
     }
 }
 
-struct GRule {
+/// A ground rule over interned atom ids: `head :- pos, not neg`.
+pub struct GRule {
     /// `None` ⇒ a constraint (`:- body`, an empty/false head).
-    head: Option<usize>,
-    pos: Vec<usize>,
-    neg: Vec<usize>,
+    pub head: Option<usize>,
+    pub pos: Vec<usize>,
+    pub neg: Vec<usize>,
+}
+
+/// A fully grounded normal program: the ground rules plus the atom table that
+/// maps each interned id back to its ground atom. This is the hand-off point
+/// shared by the reference solver, the aspif emitter (spec §5.2), and the
+/// unfounded-set verifier (spec §5.3).
+pub struct Ground {
+    pub rules: Vec<GRule>,
+    /// `atoms[id]` is the ground atom interned as `id`.
+    pub atoms: Vec<GroundAtom>,
+}
+
+impl Ground {
+    /// Number of distinct ground atoms.
+    pub fn n_atoms(&self) -> usize {
+        self.atoms.len()
+    }
 }
 
 // --- public entry point ------------------------------------------------------
+
+/// Ground a normal program (facts + rules + constraints) over its Herbrand
+/// universe into interned ground rules. The obviously-correct naive grounding;
+/// spec §5.2's GPU "intelligent grounding" is an optimization checked against it.
+pub fn ground(
+    rules: &[Rule],
+    facts: &[GroundAtom],
+    constraints: &[Vec<Literal>],
+) -> Result<Ground, AspError> {
+    let universe = herbrand_universe(rules, facts, constraints);
+    let mut intern = Interner::default();
+    let mut grules: Vec<GRule> = Vec::new();
+
+    for (pred, args) in facts {
+        let id = intern.intern((pred.clone(), args.clone()));
+        grules.push(GRule {
+            head: Some(id),
+            pos: Vec::new(),
+            neg: Vec::new(),
+        });
+    }
+    for r in rules {
+        ground_rule(r, &universe, &mut intern, &mut grules)?;
+    }
+    for body in constraints {
+        ground_constraint(body, &universe, &mut intern, &mut grules)?;
+    }
+    Ok(Ground {
+        rules: grules,
+        atoms: intern.list,
+    })
+}
 
 /// Compute all stable models of a normal program (rules + facts + constraints),
 /// each returned as a sorted list of ground atoms. Results are sorted for a
@@ -101,39 +158,30 @@ pub fn solve(
     facts: &[GroundAtom],
     constraints: &[Vec<Literal>],
 ) -> Result<Vec<Vec<GroundAtom>>, AspError> {
-    let universe = herbrand_universe(rules, facts, constraints);
-    let mut intern = Interner::default();
-    let mut ground: Vec<GRule> = Vec::new();
+    let g = ground(rules, facts, constraints)?;
+    let models = stable_models(g.atoms.len(), &g.rules)?;
+    Ok(resolve_models(&g, models))
+}
 
-    for (pred, args) in facts {
-        let id = intern.intern((pred.clone(), args.clone()));
-        ground.push(GRule {
-            head: Some(id),
-            pos: Vec::new(),
-            neg: Vec::new(),
-        });
-    }
-    for r in rules {
-        ground_rule(r, &universe, &mut intern, &mut ground)?;
-    }
-    for body in constraints {
-        ground_constraint(body, &universe, &mut intern, &mut ground)?;
-    }
+/// Stable models of an already-grounded program (e.g. the output of
+/// [`simplify::simplify`]), as sorted ground-atom lists.
+pub fn stable_models_of(g: &Ground) -> Result<Vec<Vec<GroundAtom>>, AspError> {
+    let models = stable_models(g.atoms.len(), &g.rules)?;
+    Ok(resolve_models(g, models))
+}
 
-    let n_atoms = intern.list.len();
-    let models = stable_models(n_atoms, &ground)?;
-
-    // Resolve atom ids back to ground atoms and sort for determinism.
+/// Resolve interned model ids back to sorted ground atoms, sorted for determinism.
+pub(crate) fn resolve_models(g: &Ground, models: Vec<BTreeSet<usize>>) -> Vec<Vec<GroundAtom>> {
     let mut out: Vec<Vec<GroundAtom>> = models
         .into_iter()
         .map(|s| {
-            let mut atoms: Vec<GroundAtom> = s.iter().map(|&id| intern.list[id].clone()).collect();
+            let mut atoms: Vec<GroundAtom> = s.iter().map(|&id| g.atoms[id].clone()).collect();
             atoms.sort();
             atoms
         })
         .collect();
     out.sort();
-    Ok(out)
+    out
 }
 
 // --- grounding ---------------------------------------------------------------

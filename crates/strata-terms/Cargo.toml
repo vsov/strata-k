@@ -1,0 +1,15 @@
+[package]
+name = "strata-terms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Phase 3: structural terms and the classic term-program machinery — host
+# interning (depth-bounded), subsumption, magic sets — and a points-to analysis.
+# Pure CPU (std only); device-side interning is the later follow-up.
+[dependencies]
+
+[lints]
+workspace = true

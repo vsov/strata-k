@@ -1,0 +1,16 @@
+[package]
+name = "strata-prob"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Phase 4: provenance + soft pipeline (режим B). Provenance capture → a
+# decomposable/deterministic circuit (SDD-class) → weighted model counting for
+# exact marginals and gradients → a neuro-symbolic training loop (MNIST-sum).
+# Pure CPU; the "PyTorch bridge" is the gradient interface, no external dep.
+[dependencies]
+
+[lints]
+workspace = true
