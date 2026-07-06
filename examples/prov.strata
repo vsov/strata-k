@@ -1,0 +1,24 @@
+% Prov / Prov_k — provenance annotations (режим B by capture + compilation).
+%
+% `controls` is exact provenance: each derived fact shows its pedigree (the
+% minimal proofs over the soft facts) and its marginal is an exact WMC of the
+% compiled circuit. `reach` is recursive over soft evidence, so exact Prov is
+% forbidden (table 2.4); `Prov_k(2)` keeps the 2 best proofs per fact and the
+% reported marginal is a declared lower bound.
+domain firm.
+pred owns(firm, firm): Bool.
+pred controls(firm, firm): Prov.
+pred reach(firm, firm): Prov_k(2).
+
+0.9 :: owns(acme, shell).
+0.8 :: owns(shell, target).
+0.3 :: owns(acme, target).
+
+controls(X, Y) :- owns(X, Y).
+controls(X, Z) :- owns(X, Y), owns(Y, Z).
+
+reach(X, Y) :- owns(X, Y).
+reach(X, Z) :- owns(X, Y), reach(Y, Z).
+
+?prob controls(acme, target).
+?grad reach(acme, target).

@@ -4,19 +4,24 @@
 //! (D9). Ties strata-front + strata-check + strata-eval into the end-to-end path
 //! text → parse → check → Core-IR → interpret → result.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::ExitCode as ProcExit;
 
 use strata_check::{check_program, Checked};
-use strata_eval::{marginals, prob, run_semi_naive, run_terms, Ann, Db, GroundVal};
+use strata_eval::{
+    marginals, prob, run_prov, run_semi_naive, run_terms, Ann, Db, GroundVal, ProvDb, ProvMode,
+};
 use strata_front::{format, parse, print_program};
 use strata_ir::core::{CoreProgram, Semiring};
 use strata_ir::dict::SymbolDict;
 use strata_ir::high::program::{ItemKind, Pragma, QueryKind, Term};
+use strata_ir::high::sig::Annotation;
 use strata_ir::high::Program;
 use strata_ir::terms::TermTable;
 use strata_ir::trop::Weight;
 use strata_ir::value::GroundFact;
+use strata_prob::compile_exact;
 
 /// Process exit codes. Defined once, reused by every subcommand. [CLI-1]
 #[derive(Debug, Clone, Copy)]
@@ -191,10 +196,34 @@ fn cmd_run(args: &[String]) -> Code {
     }
 
     // режим B: a `?grad` query differentiates the marginal; a `?prob` query (or
-    // any probabilistic fact) asks for the marginal itself (Phase 4). Otherwise a
-    // plain evaluation.
-    let result = if grad_mode(&checked) {
-        run_grad(&checked, &facts)
+    // any probabilistic fact) asks for the marginal itself (Phase 4). Prov/Prov_k
+    // predicates route through provenance capture + circuit compilation; with no
+    // query, a plain run of a Prov program prints each fact's pedigree.
+    // Otherwise a plain evaluation.
+    if !prov_modes(&checked).is_empty()
+        && prog
+            .items
+            .iter()
+            .any(|i| matches!(&i.node, ItemKind::Pragma(Pragma::Terms)))
+    {
+        eprintln!("strata: `@terms` with Prov/Prov_k is not supported in the reference");
+        return Code::Usage;
+    }
+    let has_prob_queries = checked.queries.iter().any(|q| q.kind == QueryKind::Prob);
+    let result = if grad_mode(&checked) || has_prob_queries {
+        // Answer ?prob queries, then ?grad queries (a program may carry both).
+        (|| {
+            let mut combined = String::new();
+            if has_prob_queries {
+                combined.push_str(&run_prob(&checked, &facts)?);
+            }
+            if grad_mode(&checked) {
+                combined.push_str(&run_grad(&checked, &facts)?);
+            }
+            Ok(combined)
+        })()
+    } else if !prov_modes(&checked).is_empty() {
+        run_prov_display(&checked, &facts)
     } else if prob_mode(&checked) {
         run_prob(&checked, &facts)
     } else {
@@ -252,11 +281,27 @@ fn run_prob(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, S
             }
         }
     } else {
+        // A query against a Prov/Prov_k predicate goes through capture +
+        // circuit (spec §2.1 stages 1–3); a Bool predicate stays on the exact
+        // enumeration oracle.
+        let mut captured: Option<ProvDb> = None;
         for q in prob_qs {
-            let ans = prob::query(&checked.core, &certain, prob_edb, &q.pred, &q.pattern)
-                .map_err(|e| e.to_string())?;
-            for (tuple, p) in ans {
-                out.push_str(&prob_line(p, &q.pred, &tuple, dict));
+            match prov_annotation(checked, &q.pred) {
+                Some(ann) => {
+                    let dbp = capture_once(&mut captured, checked, certain_facts)?;
+                    let probs: Vec<f64> = prob_edb.iter().map(|x| x.2).collect();
+                    for (tuple, proofs) in dbp.query(&q.pred, &q.pattern) {
+                        let p = compile_exact(&proofs, probs.len()).wmc(&probs);
+                        out.push_str(&prov_prob_line(p, &q.pred, &tuple, dict, ann));
+                    }
+                }
+                None => {
+                    let ans = prob::query(&checked.core, &certain, prob_edb, &q.pred, &q.pattern)
+                        .map_err(|e| e.to_string())?;
+                    for (tuple, p) in ans {
+                        out.push_str(&prob_line(p, &q.pred, &tuple, dict));
+                    }
+                }
             }
         }
     }
@@ -266,6 +311,148 @@ fn run_prob(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, S
 fn prob_line(p: f64, pred: &str, tuple: &[GroundVal], dict: &SymbolDict) -> String {
     let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
     format!("{p} :: {pred}({})\n", args.join(", "))
+}
+
+// --- Prov / Prov_k (провенанс: capture → compile → WMC) ----------------------
+
+/// The declared provenance annotation of `pred`, if it has one.
+fn prov_annotation<'a>(checked: &'a Checked, pred: &str) -> Option<&'a Annotation> {
+    checked
+        .annotations
+        .get(pred)
+        .filter(|a| matches!(a, Annotation::Prov | Annotation::ProvK { .. }))
+}
+
+/// Capture modes for every Prov/Prov_k predicate; empty ⇒ no provenance here.
+fn prov_modes(checked: &Checked) -> HashMap<String, ProvMode> {
+    checked
+        .annotations
+        .iter()
+        .filter_map(|(name, a)| match a {
+            Annotation::Prov => Some((name.clone(), ProvMode::Exact)),
+            Annotation::ProvK { k } => Some((name.clone(), ProvMode::TopK(*k))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run provenance capture at most once per invocation (queries share it).
+fn capture_once<'a>(
+    slot: &'a mut Option<ProvDb>,
+    checked: &Checked,
+    certain_facts: &[GroundFact],
+) -> Result<&'a ProvDb, String> {
+    if slot.is_none() {
+        let certain: Vec<(String, Vec<GroundVal>)> = certain_facts
+            .iter()
+            .map(|f| (f.pred.clone(), f.args.clone()))
+            .collect();
+        let dbp = run_prov(
+            &checked.core,
+            &certain,
+            &checked.prob_edb,
+            &prov_modes(checked),
+        )
+        .map_err(|e| e.to_string())?;
+        *slot = Some(dbp);
+    }
+    Ok(slot.as_ref().unwrap())
+}
+
+/// A marginal line for a provenance predicate: `Prov` is exact, `Prov_k` is a
+/// declared lower bound (И4 — the approximation is visible in the output).
+fn prov_prob_line(
+    p: f64,
+    pred: &str,
+    tuple: &[GroundVal],
+    dict: &SymbolDict,
+    ann: &Annotation,
+) -> String {
+    let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+    match ann {
+        Annotation::ProvK { k } => {
+            format!(
+                "{p} :: {pred}({})  (lower bound, top-{k})\n",
+                args.join(", ")
+            )
+        }
+        _ => format!("{p} :: {pred}({})\n", args.join(", ")),
+    }
+}
+
+/// One pedigree line per proof: the conjunction of the probabilistic facts a
+/// derivation rests on (`⊤` = rests on certain facts only; `¬[...]` = the
+/// stratified absence of a soft fact — a dual literal).
+fn render_proof(proof: &[i64], checked: &Checked, dict: &SymbolDict) -> String {
+    if proof.is_empty() {
+        return "⊤".to_string();
+    }
+    let mut lits: Vec<i64> = proof.to_vec();
+    lits.sort_by_key(|l| (l.abs(), *l < 0));
+    let parts: Vec<String> = lits
+        .iter()
+        .map(|&l| {
+            let (pred, tuple, pw) = &checked.prob_edb[(l.abs() - 1) as usize];
+            let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+            let fact = format!("[{pw} :: {pred}({})]", args.join(", "));
+            if l < 0 {
+                format!("¬{fact}")
+            } else {
+                fact
+            }
+        })
+        .collect();
+    parts.join(" ∧ ")
+}
+
+/// Plain `strata run` on a program with Prov/Prov_k predicates: every relation's
+/// tuples with their marginals; provenance-annotated predicates additionally
+/// show their pedigree, one `⇐` line per captured proof.
+fn run_prov_display(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, String> {
+    let mut captured = None;
+    let dbp = capture_once(&mut captured, checked, certain_facts)?;
+    let dict = &checked.dict;
+    let probs: Vec<f64> = checked.prob_edb.iter().map(|x| x.2).collect();
+    let modes = prov_modes(checked);
+
+    let mut out = String::new();
+    for (pred, rel) in &dbp.rels {
+        let ann = prov_annotation(checked, pred);
+        for tuple in rel.keys() {
+            let matches = dbp.query(pred, &vec![None; tuple.len()]);
+            let (_, proofs) = matches.iter().find(|(t, _)| t == tuple).unwrap();
+            let certain = proofs.iter().any(|p| p.is_empty());
+            if certain {
+                let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+                out.push_str(&format!("{pred}({})\n", args.join(", ")));
+            } else {
+                let p = compile_exact(proofs, probs.len()).wmc(&probs);
+                match ann {
+                    Some(a) => out.push_str(&prov_prob_line(p, pred, tuple, dict, a)),
+                    None => out.push_str(&prob_line(p, pred, tuple, dict)),
+                }
+            }
+            if ann.is_some() {
+                for proof in proofs {
+                    out.push_str(&format!("  ⇐ {}\n", render_proof(proof, checked, dict)));
+                }
+            }
+        }
+    }
+    let mut provk: Vec<(&String, u32)> = modes
+        .iter()
+        .filter_map(|(n, m)| match m {
+            ProvMode::TopK(k) => Some((n, *k)),
+            ProvMode::Exact => None,
+        })
+        .collect();
+    provk.sort();
+    for (pred, k) in provk {
+        out.push_str(&format!(
+            "% status: lower bound (Prov_k) — {pred}: top-{k} proofs per tuple\n"
+        ));
+    }
+    Ok(out)
 }
 
 fn grad_mode(checked: &Checked) -> bool {
@@ -284,11 +471,31 @@ fn run_grad(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, S
     let dict = &checked.dict;
 
     let mut out = String::new();
+    let mut captured: Option<ProvDb> = None;
     for q in checked.queries.iter().filter(|q| q.kind == QueryKind::Grad) {
-        let ans = prob::grad_query(&checked.core, &certain, prob_edb, &q.pred, &q.pattern)
-            .map_err(|e| e.to_string())?;
+        // Prov/Prov_k predicates differentiate the compiled circuit (reverse
+        // mode over the chain, spec §2.3); Bool predicates differentiate the
+        // enumeration oracle. Both report ∂/∂p per probabilistic fact.
+        let ans: Vec<(Vec<GroundVal>, f64, Vec<f64>)> = match prov_annotation(checked, &q.pred) {
+            Some(_) => {
+                let dbp = capture_once(&mut captured, checked, certain_facts)?;
+                let probs: Vec<f64> = prob_edb.iter().map(|x| x.2).collect();
+                dbp.query(&q.pred, &q.pattern)
+                    .into_iter()
+                    .map(|(tuple, proofs)| {
+                        let (p, g) = compile_exact(&proofs, probs.len()).grad(&probs);
+                        (tuple, p, g)
+                    })
+                    .collect()
+            }
+            None => prob::grad_query(&checked.core, &certain, prob_edb, &q.pred, &q.pattern)
+                .map_err(|e| e.to_string())?,
+        };
         for (tuple, p, grad) in ans {
-            out.push_str(&prob_line(p, &q.pred, &tuple, dict));
+            match prov_annotation(checked, &q.pred) {
+                Some(a) => out.push_str(&prov_prob_line(p, &q.pred, &tuple, dict, a)),
+                None => out.push_str(&prob_line(p, &q.pred, &tuple, dict)),
+            }
             // one gradient line per probabilistic fact, labelled by that fact;
             // a neural fact also names the model the gradient backpropagates into.
             for ((pred, ptuple, pw), g) in prob_edb.iter().zip(&grad) {
@@ -652,6 +859,159 @@ path(X, Z) :- edge(X, Y), path(Y, Z).
         assert!(prob_mode(&checked));
         let out = run_prob(&checked, &checked.edb).expect("prob run");
         assert_eq!(out, "0.625 :: path(a, c)\n", "{out}");
+    }
+
+    fn checked_of(src: &str) -> Checked {
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "{}", diags.render_text(src));
+        check_program(&prog).expect("check")
+    }
+
+    #[test]
+    fn end_to_end_prov_pedigree_display() {
+        // The ch11-prov shape: a plain run prints each Prov fact's marginal and
+        // its pedigree — one ⇐ line per minimal proof.
+        let src = "\
+domain firm.
+pred owns(firm, firm): Bool.
+pred controls(firm, firm): Prov.
+0.9 :: owns(acme, shell).
+0.8 :: owns(shell, target).
+0.3 :: owns(acme, target).
+controls(X, Y) :- owns(X, Y).
+controls(X, Z) :- owns(X, Y), owns(Y, Z).
+";
+        let checked = checked_of(src);
+        let out = run_prov_display(&checked, &checked.edb).expect("prov display");
+        // P = 0.9·0.8 + 0.3 − 0.9·0.8·0.3 = 0.804, both proofs listed.
+        assert!(out.contains("0.804 :: controls(acme, target)"), "{out}");
+        assert!(
+            out.contains("  ⇐ [0.9 :: owns(acme, shell)] ∧ [0.8 :: owns(shell, target)]"),
+            "{out}"
+        );
+        assert!(out.contains("  ⇐ [0.3 :: owns(acme, target)]"), "{out}");
+        // Base soft facts print as marginals, without pedigree lines.
+        assert!(out.contains("0.9 :: owns(acme, shell)\n"), "{out}");
+    }
+
+    #[test]
+    fn end_to_end_prob_on_prov_matches_enumeration() {
+        // The same query answered by the circuit (Prov pred) and the exact
+        // enumeration oracle (Bool pred) must agree: 0.625 both ways.
+        let bool_src = "\
+pred edge(node, node): Bool.
+pred path(node, node): Bool.
+path(X, Y) :- edge(X, Y).
+path(X, Z) :- edge(X, Y), path(Y, Z).
+0.5 :: edge(a, c).
+0.5 :: edge(a, b).
+0.5 :: edge(b, c).
+?prob path(a, c).
+";
+        let prov_src = "\
+pred edge(node, node): Bool.
+pred path(node, node): Bool.
+pred answer(node, node): Prov.
+path(X, Y) :- edge(X, Y).
+path(X, Z) :- edge(X, Y), path(Y, Z).
+answer(X, Y) :- path(X, Y).
+0.5 :: edge(a, c).
+0.5 :: edge(a, b).
+0.5 :: edge(b, c).
+?prob answer(a, c).
+";
+        let enumerated = run_prob(&checked_of(bool_src), &checked_of(bool_src).edb).unwrap();
+        let circuit = run_prob(&checked_of(prov_src), &checked_of(prov_src).edb).unwrap();
+        assert_eq!(enumerated, "0.625 :: path(a, c)\n");
+        assert_eq!(circuit, "0.625 :: answer(a, c)\n");
+    }
+
+    #[test]
+    fn end_to_end_provk_lower_bound_bites_and_says_so() {
+        // Two routes a→c (0.5 direct, 0.25 via b); Prov_k(1) keeps only the
+        // best proof → 0.5, printed as a declared lower bound (И4).
+        let src = "\
+pred edge(node, node): Bool.
+pred reach(node, node): Prov_k(1).
+reach(X, Y) :- edge(X, Y).
+reach(X, Z) :- edge(X, Y), reach(Y, Z).
+0.5 :: edge(a, c).
+0.5 :: edge(a, b).
+0.5 :: edge(b, c).
+?prob reach(a, c).
+";
+        let checked = checked_of(src);
+        let out = run_prob(&checked, &checked.edb).expect("prob run");
+        assert_eq!(out, "0.5 :: reach(a, c)  (lower bound, top-1)\n", "{out}");
+    }
+
+    #[test]
+    fn end_to_end_grad_on_prov_circuit_keeps_model_labels() {
+        // ?grad on a Prov predicate differentiates the compiled circuit; a
+        // neural leaf still names the model the gradient backpropagates into.
+        let src = "\
+domain firm.
+neural flag(firm) from model \"aml_gnn\".
+pred investigate(firm): Prov.
+investigate(X) :- flag(X).
+0.9 :: flag(acme).
+?grad investigate(acme).
+";
+        let checked = checked_of(src);
+        let out = run_grad(&checked, &checked.edb).expect("grad run");
+        assert_eq!(
+            out, "0.9 :: investigate(acme)\n  ∂/∂[0.9 :: flag(acme)] = 1  (→ model \"aml_gnn\")\n",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn end_to_end_prov_negation_is_a_dual_literal() {
+        // not over a soft EDB fact: P(ok) = 1 − 0.5, and the pedigree shows ¬.
+        let src = "\
+domain firm.
+pred node(firm): Bool.
+pred flag(firm): Bool.
+pred ok(firm): Prov.
+node(a).
+0.5 :: flag(a).
+ok(X) :- node(X), not flag(X).
+";
+        let checked = checked_of(src);
+        let out = run_prov_display(&checked, &checked.edb).expect("prov display");
+        assert!(out.contains("0.5 :: ok(a)"), "{out}");
+        assert!(out.contains("  ⇐ ¬[0.5 :: flag(a)]"), "{out}");
+    }
+
+    #[test]
+    fn end_to_end_prov_beyond_the_enumeration_limit() {
+        // 25 soft facts: 2^25 worlds is past the enumeration cap, but the Prov
+        // circuit answers exactly (the capability the annotation buys).
+        let mut src = String::from(
+            "pred edge(node, node): Bool.\n\
+             pred path(node, node): Bool.\n\
+             pred answer(node, node): Prov.\n\
+             path(X, Y) :- edge(X, Y).\n\
+             path(X, Z) :- edge(X, Y), path(Y, Z).\n\
+             answer(X, Y) :- path(X, Y).\n",
+        );
+        for i in 0..25 {
+            src.push_str(&format!("0.9 :: edge(n{i}, n{}).\n", i + 1));
+        }
+        src.push_str("?prob answer(n0, n25).\n");
+        let checked = checked_of(&src);
+        let out = run_prob(&checked, &checked.edb).expect("circuit path runs");
+        let p: f64 = out
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .expect("a marginal");
+        assert!((p - 0.9f64.powi(25)).abs() < 1e-12, "{out}");
+        // The Bool enumeration oracle refuses the same query at this size.
+        let bool_src = src.replace(": Prov", ": Bool");
+        let checked_bool = checked_of(&bool_src);
+        assert!(run_prob(&checked_bool, &checked_bool.edb).is_err());
     }
 
     #[test]

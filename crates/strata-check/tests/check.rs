@@ -7,8 +7,7 @@ use strata_ir::high::program::{atom, var, ItemKind, Literal, PredDecl, Rule};
 use strata_ir::high::sig::{Annotation, ArgType, Effects, Signature};
 use strata_ir::high::{Item, Program};
 
-/// Hand-build a single-argument predicate declaration with a given annotation
-/// (bypasses the parser, which rejects Prov/Prov_k at the surface).
+/// Hand-build a single-argument predicate declaration with a given annotation.
 fn pred1(name: &str, ann: Annotation) -> Item {
     Item::new(ItemKind::Predicate(PredDecl {
         name: name.into(),
@@ -177,8 +176,10 @@ fn recursive_prov_is_a_table_2_4_forbidden_cell() {
 }
 
 #[test]
-fn nonrecursive_prov_is_not_executable_in_phase0() {
-    // p: Prov, non-recursive (p(X) :- q(X), q: Bool) → режим B, not implemented.
+fn nonrecursive_prov_lowers_to_bool_core() {
+    // p: Prov, non-recursive (p(X) :- q(X), q: Bool) → режим B by capture +
+    // compilation; Core-IR carries it set-wise as Bool, the annotation map
+    // routes it to the provenance evaluator.
     let prog = Program::new(vec![
         pred1("p", Annotation::Prov),
         pred1("q", Annotation::Bool),
@@ -187,12 +188,74 @@ fn nonrecursive_prov_is_not_executable_in_phase0() {
             body: vec![Literal::Pos(atom("q", vec![var("X")]))],
         })),
     ]);
+    let c = check_program(&prog).expect("non-recursive Prov checks");
+    let p = c.core.predicates.iter().find(|p| p.name == "p").unwrap();
+    assert_eq!(p.semiring, Semiring::Bool);
+    assert_eq!(c.annotations["p"], Annotation::Prov);
+    assert_eq!(c.core.rules.len(), 1, "the Prov rule is lowered");
+}
+
+#[test]
+fn recursive_prov_k_is_allowed() {
+    // Prov_k exists precisely for the recursive soft case (spec 2.2).
+    let prog = Program::new(vec![
+        pred1("p", Annotation::ProvK { k: 3 }),
+        Item::new(ItemKind::Rule(Rule {
+            head: atom("p", vec![var("X")]),
+            body: vec![Literal::Pos(atom("p", vec![var("X")]))],
+        })),
+    ]);
+    let c = check_program(&prog).expect("recursive Prov_k checks");
+    assert_eq!(c.annotations["p"], Annotation::ProvK { k: 3 });
+}
+
+#[test]
+fn prov_k_zero_keeps_no_proofs() {
+    let prog = Program::new(vec![pred1("p", Annotation::ProvK { k: 0 })]);
     let codes = err_codes(&prog);
     assert!(codes.contains(&codes::NOT_EXECUTABLE.0), "got {codes:?}");
-    assert!(
-        !codes.contains(&codes::TABLE_2_4_FORBIDDEN.0),
-        "non-recursive Prov is not the forbidden cell"
-    );
+}
+
+#[test]
+fn soft_cannot_launder_into_bool() {
+    // Prov body into a Bool head would erase the taint — forbidden.
+    let prog = Program::new(vec![
+        pred1("soft", Annotation::Prov),
+        pred1("hard", Annotation::Bool),
+        Item::new(ItemKind::Rule(Rule {
+            head: atom("hard", vec![var("X")]),
+            body: vec![Literal::Pos(atom("soft", vec![var("X")]))],
+        })),
+    ]);
+    let codes = err_codes(&prog);
+    assert!(codes.contains(&codes::SEMIRING_CONFLICT.0), "got {codes:?}");
+}
+
+#[test]
+fn trop_and_prov_are_incomparable() {
+    // No homomorphism either way (spec 1.7): Trop body into a Prov head errors.
+    let prog = Program::new(vec![
+        pred1("w", Annotation::Trop),
+        pred1("p", Annotation::Prov),
+        Item::new(ItemKind::Rule(Rule {
+            head: atom("p", vec![var("X")]),
+            body: vec![Literal::Pos(atom("w", vec![var("X")]))],
+        })),
+    ]);
+    let codes = err_codes(&prog);
+    assert!(codes.contains(&codes::SEMIRING_CONFLICT.0), "got {codes:?}");
+}
+
+#[test]
+fn bool_flows_into_prov() {
+    // Bool ⊑ Prov: certain evidence may support a provenance conclusion.
+    let src = "\
+pred q(node): Bool.
+pred p(node): Prov.
+p(X) :- q(X).
+q(a).
+";
+    check(src).expect("Bool → Prov is a lattice edge");
 }
 
 #[test]

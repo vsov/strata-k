@@ -20,7 +20,8 @@ pred_decl    = "pred" , const_ident , "(" , [ arg_type { "," , arg_type } ] , ")
 arg_type     = const_ident        (* a declared domain *)
              | "int"              (* i64 column / Trop weight source *)
              | "term" , const_ident ;  (* @terms structural-term column *)
-annotation   = "Bool" | "Trop" | "Prov" | "Prov_k" ;   (* Prov/Prov_k: not-impl in Phase 0 *)
+annotation   = "Bool" | "Trop" | "Prov"
+             | "Prov_k" , [ "(" , integer , ")" ] ;    (* bare Prov_k = Prov_k(3); k ≥ 1 *)
 effect       = "total" | "partial" | "complete" | "sound_only"
              | "deterministic" | "stochastic" ;
 

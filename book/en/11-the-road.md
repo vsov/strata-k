@@ -1,6 +1,6 @@
 # Chapter 11 — The Road
 
-*Status: this chapter is the one the status boxes have been deferring to. It was written as design and vision, explicitly staged — and much of it has since crossed onto the built side (the neural boundary, the GPU engine, the pedigree machinery, structured values). Where a piece has crossed, the chapter runs it; where it hasn't, the label still says so.*
+*Status: this chapter is the one the status boxes have been deferring to. It was written as design and vision, explicitly staged — and much of it has since crossed onto the built side (the neural boundary, the GPU engine, the pedigree machinery down to the surface annotations, structured values). Where a piece has crossed, the chapter runs it; where it hasn't, the label still says so.*
 
 Every claim in chapters 6 through 9 you could run. Chapter 10 was design with an oracle waiting for it — and the engine has since been built against that oracle. What remains is the part of the project that is honestly a bet — and the prologue promised that when this book speculates, it says so. This chapter says so. It also says something rarer: exactly *which* pieces are settled engineering, which are designed-but-unbuilt, and which are open research, because those are three different kinds of promise and mixing them is how fields earn winters.
 
@@ -18,23 +18,31 @@ Read what happened, because every concept in it is already yours. `flag` is a pr
 
 And the gradient flows back — that second line. `?grad` runs the pedigree circuit of chapter 7 backward and reports *how much each of the model's confidences mattered to the conclusion*: here `investigate(acme)` rests entirely on the one flag, so the number is `1`, and that number is exactly what a host training loop backpropagates into the network. The design's participation in the neuro-symbolic convergence of chapter 5, borrowed pieces credited there, is a query you can run.
 
-One thing is still staged, and the language says so in the same breath. The *model itself* — the network whose forward pass produced `0.9 :: flag(acme, structuring)` — is here supplied as data, its outputs written into the program the way a batch of inferences would be dumped; wiring an actual model in-process, so the facts are computed rather than pasted, is settled engineering the reference does not yet include. And the fuller pedigree the design wants — the whole provenance as a compiled circuit, not just a marginal — is further out. Ask for it by name:
+One thing is still staged, and the language says so in the same breath. The *model itself* — the network whose forward pass produced `0.9 :: flag(acme, structuring)` — is here supplied as data, its outputs written into the program the way a batch of inferences would be dumped; wiring an actual model in-process, so the facts are computed rather than pasted, is settled engineering the reference does not yet include. The fuller pedigree the design wants — the whole provenance as a compiled circuit, not just a marginal — was, for most of this book's writing, the piece one step further out. It isn't anymore. Ask for it by name:
 
 ```
-$ strata check examples/book/ch11-prov.strata
-error[E0100]: the Prov/Prov_k annotation is not implemented in Phase 0
-  --> 7:28
-   | pred controls(firm, firm): Prov.
-   |                            ^^^^
+$ strata run examples/book/ch11-prov.strata
+0.9 :: controls(acme, shell)
+  ⇐ [0.9 :: owns(acme, shell)]
+0.804 :: controls(acme, target)
+  ⇐ [0.9 :: owns(acme, shell)] ∧ [0.8 :: owns(shell, target)]
+  ⇐ [0.3 :: owns(acme, target)]
+0.8 :: controls(shell, target)
+  ⇐ [0.8 :: owns(shell, target)]
+0.9 :: owns(acme, shell)
+0.3 :: owns(acme, target)
+0.8 :: owns(shell, target)
 ```
 
-Read that diagnostic carefully, because the mechanism is the thing to keep. The declaration *parsed* — the grammar of the full language, `Prov` provenance included, is already the shipped grammar, and an unbuilt feature is refused by name with a stable code, not rejected as gibberish. The surface is complete; the execution is staged. That is what a future-syntax frame means mechanically, and it is a small design decision with a purpose: a program written against the full language today fails loudly and specifically, never silently and confusingly — the same courtesy the language extends to typos, extended to its own roadmap.
+Read what happened, because this listing is chapter 1's promise paid in full. `controls` is annotated `Prov` — full pedigree — and every derived fact prints the minimal sets of soft facts it rests on, one `⇐` line per proof, with the marginal in front computed by compiling exactly those proofs into a circuit that counts each fact once: `0.804` is the shared-evidence arithmetic of chapter 7, done by the pedigree itself. The auditor's derivation and the probability are one object now, printed together.
+
+For most of this book's writing, that same declaration parsed and was then refused by name, with a stable code — `error[E0100]: the Prov/Prov_k annotation is not implemented` — never rejected as gibberish. That was the future-syntax frame, and the mechanism outlives its last tenant: the grammar of the full language shipped from day one, so a program written against it failed loudly and specifically, never silently and confusingly — the same courtesy the language extends to typos, extended to its own roadmap. The frame is empty now; everything the shipped grammar parses, it executes. The contract stands for whatever a later revision stages. And the fences that are *semantic* rather than staged hold exactly as drawn: exact provenance through recursion is impossible — a recursive soft fact has infinitely many derivation trees — so the checker still refuses a recursive `Prov` by name (`E1008`) and offers `Prov_k`, chapter 7's escape valve, whose printed answer says what it is: `(lower bound, top-k)`, a bound that only tightens.
 
 ## The phases, and the kind of promise each one is
 
 The road from the repository you can clone to the system of chapters 10–11, in the order the engineering dependencies dictate — with each phase labeled by promise-kind: **[E]** settled engineering (the field knows how; it's work), **[D]** designed here, unbuilt (the kind chapter 10 *was*, until its engine was built against the waiting oracle), **[R]** open research (no one knows; declared as such).
 
-1. **Scale the pedigree machinery.** Circuit compilation, exact weighted counting with gradients, top-k pedigrees, and a compilation cache all run at reference scale — demonstrated by the canonical neuro-symbolic exercise of learning digits from sums alone; wiring a production-size external compiler in remains **[E — the knowledge-compilation field's standard toolbox]**.
+1. **Scale the pedigree machinery.** Circuit compilation, exact weighted counting with gradients, top-k pedigrees, and a compilation cache all run at reference scale — demonstrated by the canonical neuro-symbolic exercise of learning digits from sums alone — and are now wired through the surface language: `Prov` and `Prov_k` are annotations you write, pedigrees you read, marginals you query; wiring a production-size external compiler in remains **[E — the knowledge-compilation field's standard toolbox]**.
 2. **Incrementality.** New facts arrive, conclusions update without recomputation — the delete-and-rederive reference runs, checked against full recomputation; the GPU version and the fuller differential machinery of chapter 5's line three remain **[E in the literature, D in this design]**. For the trading house this is the difference between a nightly batch and a compliance engine that answers *during* the trade.
 3. **The GPU engine.** Chapter 10, executed — literally: columnar device-resident fixpoints, worst-case-optimal joins, the hybrid planner, the grounding pass, each bit-for-bit against the oracle **[built; the remaining race is performance hardening, decided by measurements in the repository]**.
 4. **The neural boundary.** Predicates from models, gradients back through pedigrees — the interface runs today: `neural` facts flow into mode B, and `?grad` sends the query's gradient back toward the named model **[built at reference scale; the *in-process model* and *production scale* honestly sit between E and R]**.

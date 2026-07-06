@@ -23,16 +23,15 @@ const RUNNABLE: &[&str] = &[
     // ch. 11: the neural predicate runs now — soft facts from a model, `?grad`
     // backpropagating the query's gradient into it.
     "ch11-neural.strata",
+    // ch. 11: `Prov` runs now — pedigrees captured during evaluation, marginals
+    // by exact WMC of the compiled circuit. The last future-syntax frame fell.
+    "ch11-prov.strata",
 ];
 
 /// Listings the book shows being *rejected*: each must fail `strata check` with
 /// diagnostics (exit 1) and emit the named stable code. `ch09-vignette-draft`
-/// is the LLM's wrong first attempt the checker catches (ch. 9); `ch11-prov`
-/// is a future-syntax frame that parses then reports "not implemented" (ch. 11).
-const CHECK_FAILS: &[(&str, &str)] = &[
-    ("ch09-vignette-draft.strata", "E1001"),
-    ("ch11-prov.strata", "E0100"),
-];
+/// is the LLM's wrong first attempt the checker catches (ch. 9).
+const CHECK_FAILS: &[(&str, &str)] = &[("ch09-vignette-draft.strata", "E1001")];
 
 fn book_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR = crates/strata-cli; workspace root is two levels up.

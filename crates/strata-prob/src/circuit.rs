@@ -18,6 +18,9 @@
 pub enum Node {
     /// Probabilistic input fact `i` (its probability is `p[i]`).
     Leaf(usize),
+    /// The *absence* of probabilistic fact `i` — the dual literal `x̄` of the
+    /// spec's provenance DAG ({AND, OR, NEG-leaf, LEAF}); value `1 - p[i]`.
+    NegLeaf(usize),
     /// Conjunction of independent sub-provenances (decomposable).
     And(Vec<usize>),
     /// Disjunction of mutually exclusive sub-provenances (deterministic).
@@ -42,6 +45,7 @@ impl Circuit {
         for i in 0..self.nodes.len() {
             val[i] = match &self.nodes[i] {
                 Node::Leaf(l) => p[*l],
+                Node::NegLeaf(l) => 1.0 - p[*l],
                 Node::And(cs) => cs.iter().map(|&c| val[c]).product(),
                 Node::Or(cs) => cs.iter().map(|&c| val[c]).sum(),
                 Node::True => 1.0,
@@ -76,6 +80,7 @@ impl Circuit {
             }
             match &self.nodes[i] {
                 Node::Leaf(l) => leaf_g[*l] += g,
+                Node::NegLeaf(l) => leaf_g[*l] -= g, // ∂(1-p)/∂p = -1
                 Node::And(cs) => {
                     // ∂(∏ c)/∂c_j = ∏_{k≠j} c_k — computed excluding j to stay
                     // correct when some child is zero.
@@ -115,6 +120,10 @@ impl Builder {
     pub fn leaf(&mut self, i: usize) -> usize {
         self.num_leaves = self.num_leaves.max(i + 1);
         self.push(Node::Leaf(i))
+    }
+    pub fn neg_leaf(&mut self, i: usize) -> usize {
+        self.num_leaves = self.num_leaves.max(i + 1);
+        self.push(Node::NegLeaf(i))
     }
     pub fn and(&mut self, cs: Vec<usize>) -> usize {
         self.push(Node::And(cs))

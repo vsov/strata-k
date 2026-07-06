@@ -13,6 +13,10 @@ use crate::circuit::{Builder, Circuit};
 /// Compile captured proofs into a provenance circuit: `OR` over proofs, each an
 /// `AND` of the leaf facts supporting it. An empty proof is `true` (the tuple is
 /// certain); no proofs is `false` (underivable).
+///
+/// The `OR` is exact **only when the proofs are mutually exclusive events**
+/// (categorical leaves, as in [`sum_circuit`]). For overlapping proofs over
+/// independent Bernoulli leaves use [`crate::compile::compile_exact`].
 pub fn build_dnf(proofs: &[Vec<usize>]) -> Circuit {
     let mut b = Builder::new();
     if proofs.is_empty() {

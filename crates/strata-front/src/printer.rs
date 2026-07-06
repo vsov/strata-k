@@ -138,12 +138,13 @@ fn arg_type(a: &ArgType) -> String {
     }
 }
 
-fn annotation(a: &Annotation) -> &'static str {
+fn annotation(a: &Annotation) -> String {
     match a {
-        Annotation::Bool => "Bool",
-        Annotation::Trop => "Trop",
-        Annotation::Prov => "Prov",
-        Annotation::ProvK { .. } => "Prov_k",
+        Annotation::Bool => "Bool".into(),
+        Annotation::Trop => "Trop".into(),
+        Annotation::Prov => "Prov".into(),
+        // Always explicit, so the k a program runs with is the k it shows.
+        Annotation::ProvK { k } => format!("Prov_k({k})"),
     }
 }
 

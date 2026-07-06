@@ -48,7 +48,15 @@ type and the whole relation a **semiring**:
 pred edge(node, node): Bool.
 pred stake_count(firm, int): Bool.
 pred route(node, node): Trop.
+pred controls(firm, firm): Prov.
+pred reach(node, node): Prov_k(2).
 ```
+
+The four annotations: `Bool` (plain deduction), `Trop` (min-plus weights),
+`Prov` (full provenance — see
+[Provenance annotations](#provenance-annotations-prov--prov_k)), and
+`Prov_k(k)` (top-k provenance, the recursion-safe approximation; bare `Prov_k`
+means `Prov_k(3)`).
 
 Mandatory signatures are a deliberate design choice: a mistyped predicate name
 is a compile error (`E1001`), not a silently empty relation. Using a predicate
@@ -146,10 +154,13 @@ $ strata run examples/tc.strata      # with Trop edges
 reach(a, c) = 5
 ```
 
-The `Prov` / `Prov_k` provenance semirings are designed but **not implemented in
-Phase 0**; a predicate annotated with them parses and then reports `E1006`, and a
-recursive `Prov` additionally reports `E1008` (the forbidden cell of the
-semiring×recursion table) with the nearest allowed alternative.
+The `Prov` / `Prov_k` provenance semirings **run** — see
+[Provenance annotations](#provenance-annotations-prov--prov_k). The full
+annotation lattice is `Bool ⊑ Trop` and `Bool ⊑ Prov ⊑ Prov_k`, with `Trop` and
+`Prov` incomparable (no homomorphism either way) and no edge back from soft to
+certain — a `Prov` body cannot flow into a `Bool` head (`E1007`, the taint
+discipline). A recursive `Prov` predicate reports `E1008` (the forbidden cell of
+the semiring×recursion table) with the nearest allowed alternative, `Prov_k`.
 
 ## Probabilistic queries
 
@@ -207,6 +218,45 @@ Each `∂/∂[...]` line is `∂P(tuple)/∂p_i` for that soft fact — exact (c
 against finite differences), including at boundary probabilities `0` and `1`.
 This is the number a host training loop backpropagates into whatever produced
 the probability.
+
+## Provenance annotations (`Prov` / `Prov_k`)
+
+A predicate annotated `Prov` carries **full provenance**: every derived fact
+knows the minimal sets of soft facts it rests on — its *proofs*. Evaluation
+captures the proofs during the fixpoint, compiles them into a
+deterministic/decomposable circuit (Shannon expansion, exact even when proofs
+share facts), and weighted model counting gives the marginal; the same circuit
+runs backward for `?grad`. A plain `strata run` prints each fact's pedigree,
+one `⇐` line per proof:
+
+```
+$ strata run examples/book/ch11-prov.strata
+0.9 :: controls(acme, shell)
+  ⇐ [0.9 :: owns(acme, shell)]
+0.804 :: controls(acme, target)
+  ⇐ [0.9 :: owns(acme, shell)] ∧ [0.8 :: owns(shell, target)]
+  ⇐ [0.3 :: owns(acme, target)]
+```
+
+`?prob`/`?grad` queries against a `Prov`-annotated predicate go through the
+same capture → compile → count pipeline instead of world enumeration. Where
+enumeration is refused past 20 soft facts (`2^n` worlds), the circuit path
+scales with the number of *proofs* — a 25-fact chain is answered exactly.
+
+Exact provenance through recursion is impossible (a recursive soft fact has
+infinitely many derivation trees; its exact provenance is a formal power
+series), so a recursive `Prov` predicate is rejected (`E1008`) and the language
+offers `Prov_k(k)` — keep the `k` best proofs per tuple (bare `Prov_k` means
+`Prov_k(3)`). The reported marginal is then a **declared lower bound**, printed
+as one — `0.5 :: reach(a, c)  (lower bound, top-1)` — monotone in `k` and equal
+to exact once `k` covers every proof.
+
+What capture refuses, loudly, rather than approximate silently: negating a
+tuple with *derived* soft provenance (negating a soft **EDB fact** is fine and
+shows in the pedigree as a dual literal `¬[...]`), aggregating over
+soft-supported tuples, and `@terms` combined with provenance. The exact
+enumeration oracle continues to cover the first two world-by-world on `Bool`
+predicates, and the two pipelines are differentially tested against each other.
 
 ## Neural predicates
 
@@ -331,13 +381,13 @@ machine-applicable fix. The front-end owns the `E0xxx` range, the checker the
 | `E0002` | parse: expected a different token/construct |
 | `E0003` | parse: unexpected end of input |
 | `E0010` | singleton variable (occurs exactly once) |
-| `E0100` | construct is grammatical but not implemented in Phase 0 |
+| `E0100` | construct is grammatical but not implemented (reserved — nothing in the current language triggers it) |
 | `E1001` | predicate used but never declared |
 | `E1002` | negation/aggregation through a cycle: not stratifiable |
 | `E1003` | head/negated variable not range-restricted (safety) |
 | `E1004` | fact contains a non-ground term |
 | `E1005` | atom arity does not match its declaration |
-| `E1006` | annotation not executable in Phase 0 (`Prov`/`Prov_k`) |
+| `E1006` | `Prov_k(0)` — the proof bound must be ≥ 1 |
 | `E1007` | rule mixes incompatible semirings |
 | `E1008` | forbidden cell of the semiring×recursion table (2.4) |
 | `E1009` | fact annotation mismatch (`float ::` on non-Bool / `int ::` on non-Trop) |
@@ -348,12 +398,10 @@ JSON.
 
 ## Not implemented in Phase 0
 
-These constructs **parse into valid IR** and then return a stable
-*"not implemented in Phase 0"* diagnostic — the surface is complete, execution is
-staged:
-
-- `Prov` / `Prov_k` provenance annotations (the full pedigree as a compiled
-  circuit; `?prob`/`?grad` marginals and gradients already run)
+Nothing. Every construct in the shipped grammar now executes — `Prov`/`Prov_k`
+were the last staged pieces. The future-syntax mechanism itself (parse into
+valid IR, refuse by name with the stable `E0100`) remains the contract for any
+construct a future revision stages.
 
 The GPU execution engine and incremental (differential) evaluation live beside
 this reference stack — see [../ARCHITECTURE.md](../ARCHITECTURE.md).

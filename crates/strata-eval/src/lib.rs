@@ -9,12 +9,14 @@
 pub mod dred;
 pub mod naive;
 pub mod prob;
+pub mod provenance;
 pub mod seminaive;
 pub mod store;
 pub mod value;
 
 pub use naive::{run, run_terms, EvalError};
 pub use prob::{marginals, ProbError};
+pub use provenance::{run_prov, ProvDb, ProvError, ProvMode};
 pub use seminaive::run_semi_naive;
 pub use store::{Db, Relation, Tuple};
 pub use value::{Ann, GroundVal};

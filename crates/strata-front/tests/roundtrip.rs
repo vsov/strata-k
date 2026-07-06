@@ -8,7 +8,26 @@ const SAMPLES: &[&str] = &[
     "pred outdeg(node, int): Bool.\noutdeg(X, count<Y>) :- edge(X, Y).\n",
     "pred edge(node, node): Trop partial.\n5 :: edge(a, b).\ninput edge from \"edges.tsv\".\n",
     "? path(a, X).\n",
+    "pred controls(firm, firm): Prov.\n0.9 :: owns(a, b).\n?prob controls(a, X).\n",
+    "pred reach(node, node): Prov_k(5).\n?grad reach(a, X).\n",
 ];
+
+#[test]
+fn bare_prov_k_formats_to_its_default_bound() {
+    // `Prov_k` with no bound is `Prov_k(3)`; fmt makes the k explicit.
+    let (p, d) = parse("pred r(node): Prov_k.\n");
+    assert!(!d.has_errors());
+    let printed = print_program(&p);
+    assert!(printed.contains("Prov_k(3)"), "{printed}");
+    let (p2, _) = parse(&printed);
+    assert_eq!(p, p2);
+}
+
+#[test]
+fn prov_k_rejects_a_zero_bound() {
+    let (_, d) = parse("pred r(node): Prov_k(0).\n");
+    assert!(d.has_errors(), "Prov_k(0) must not parse");
+}
 
 #[test]
 fn parse_print_parse_is_a_fixpoint() {

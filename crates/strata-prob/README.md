@@ -9,20 +9,30 @@ provenance and counts every fact once.
 
 | Module | Phase-4 task | What it does |
 |---|---|---|
-| `circuit` | **SDD-class circuit + WMC + gradients** | decomposable-AND / deterministic-OR circuit; `wmc` (exact marginal), `grad` (∂WMC/∂pᵢ — the autodiff bridge) |
-| `provenance` | **chain capture** | derivations → OR-of-ANDs circuit (`build_dnf`); `sum_circuit` for MNIST-sum |
-| `topk` | **top-k** | the diff-top-k proofs — sparse differentiable surrogate for exact WMC |
+| `circuit` | **SDD-class circuit + WMC + gradients** | decomposable-AND / deterministic-OR circuit (with `NegLeaf` dual literals); `wmc` (exact marginal), `grad` (∂WMC/∂pᵢ — the autodiff bridge) |
+| `provenance` | **chain capture** | derivations → OR-of-ANDs circuit (`build_dnf`, exact for mutually exclusive disjuncts); `sum_circuit` for MNIST-sum |
+| `compile` | **exact compilation** (`Prov`) | proof DNF with *shared* leaves → deterministic circuit by Shannon expansion (memoized, OBDD-style); exact where a plain OR over-counts |
+| `topk` | **top-k** (`Prov_k`) | the diff-top-k proofs; `topk_circuit` = exact WMC of the *union* of the kept proofs — a guaranteed lower bound (a plain sum is not, once proofs overlap) |
 | `mnist_sum` | **the exit** | learn digits from sum-only supervision, with a **compilation cache** across epochs |
+
+This crate is the engine behind the surface language's `Prov`/`Prov_k`
+annotations: `strata-eval::provenance` captures the proofs, `compile`/`topk`
+compile them, `circuit` counts and differentiates.
 
 ## Verification
 
-`cargo test -p strata-prob` — 9 unit tests:
+`cargo test -p strata-prob` — 19 unit tests:
 
 - **circuit**: WMC of an AND/OR circuit; gradient matches finite differences
-  (incl. an AND with a zero child).
+  (incl. an AND with a zero child); `NegLeaf` gradients.
 - **provenance**: DNF WMC is exact; `sum_circuit` equals the direct convolution
   `Σ p1[a]·p2[s−a]` for every sum, and the total over all sums is 1.
-- **topk**: picks the highest-probability proofs; full-k equals the exact total.
+- **compile**: 200 random DNFs (shared leaves, dual literals) — WMC and
+  gradients against brute-force world enumeration; contradiction (`x·x̄`) and
+  absorption handling.
+- **topk**: picks the highest-probability proofs; the signed union-WMC is a
+  lower bound where a sum exceeds 1, monotone in k, exact at full k;
+  selection is deterministic under input permutation.
 - **mnist_sum**: learns single-digit classification from sum labels to >0.9.
 
 ## Exit — MNIST-sum parity

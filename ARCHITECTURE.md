@@ -142,10 +142,14 @@ validated bit-for-bit against a reference oracle:
 - **`strata-eval::dred`** — DRed (delete/rederive) incremental maintenance,
   checked against from-scratch recomputation.
 
-Still designed-but-unbuilt (parses, returns the stable *"not implemented in
-Phase 0"* diagnostic): the **`Prov` / `Prov_k`** provenance annotations — the
-full pedigree of every derived fact as a compiled circuit, wired through the
-surface language. The `strata-prob` circuits are the machinery it will stand on.
+The **`Prov` / `Prov_k`** provenance annotations complete the surface: the
+pedigree of every derived fact, captured during the fixpoint
+(`strata-eval::provenance` — minimal proof DNFs, dual literals for stratified
+negation over soft EDB facts), compiled to a deterministic/decomposable circuit
+by Shannon expansion (`strata-prob::compile`), and counted — exact WMC for
+`Prov`, a declared lower bound over the top-k proofs for `Prov_k`.
+`strata-eval::prob` (exact world enumeration) is the differential oracle for
+that whole pipeline. With this, every construct in the shipped grammar executes.
 
 The point of shipping the slow references first is that each fast engine has a
 bit-exact oracle to be tested against from day one.

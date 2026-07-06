@@ -17,6 +17,7 @@ strata-front.workspace = true
 strata-check.workspace = true
 strata-eval.workspace = true
 strata-asp.workspace = true
+strata-prob.workspace = true
 serde_json.workspace = true
 
 [lints]

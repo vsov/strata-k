@@ -25,6 +25,10 @@ pub enum ArgType {
     Term { name: String },
 }
 
+/// The proof bound a bare `Prov_k` (no explicit `(k)`) declares: keep the 3
+/// best proofs per tuple — Scallop's default, a good bias/cost point.
+pub const DEFAULT_TOP_K: u32 = 3;
+
 /// Annotation (semiring / provenance) type. [spec 1.7]
 ///
 /// Pure-payload variants use adjacent tagging; the unit variants serialize as
@@ -75,11 +79,6 @@ impl Annotation {
         } else {
             None
         }
-    }
-
-    /// Executable in Phase 0? Only Bool and Trop run (D5).
-    pub fn is_phase0_executable(&self) -> bool {
-        matches!(self, Annotation::Bool | Annotation::Trop)
     }
 }
 

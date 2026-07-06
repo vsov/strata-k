@@ -13,7 +13,7 @@ use strata_ir::high::program::{
     PredDecl, Program, Query, QueryKind, Term,
 };
 use strata_ir::high::sig::{
-    Annotation, ArgType, Completeness, Determinism, Effects, Signature, Termination,
+    Annotation, ArgType, Completeness, Determinism, Effects, Signature, Termination, DEFAULT_TOP_K,
 };
 use strata_ir::trop::Weight;
 
@@ -208,14 +208,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn not_impl(&mut self, span: Span, what: &str) {
-        self.diags.error(
-            codes::NOT_IMPLEMENTED,
-            format!("{what} is not implemented in Phase 0"),
-            span,
-        );
-    }
-
     // --- items ---------------------------------------------------------------
 
     fn item(&mut self) -> PResult<Item> {
@@ -258,12 +250,9 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Tok::RParen, "`)`")?;
         self.expect(&Tok::Colon, "`:`")?;
-        let (annotation, ann_span) = self.annotation()?;
+        let (annotation, _ann_span) = self.annotation()?;
         let effects = self.effects();
         self.expect(&Tok::Dot, "`.`")?;
-        if !annotation.is_phase0_executable() {
-            self.not_impl(ann_span, "the Prov/Prov_k annotation");
-        }
         Ok(Item::new(ItemKind::Predicate(PredDecl {
             name,
             sig: Signature {
@@ -303,7 +292,26 @@ impl<'a> Parser<'a> {
             Some(Tok::Bool) => Annotation::Bool,
             Some(Tok::Trop) => Annotation::Trop,
             Some(Tok::Prov) => Annotation::Prov,
-            Some(Tok::ProvK) => Annotation::ProvK { k: 0 },
+            Some(Tok::ProvK) => {
+                // `Prov_k` keeps the k best proofs per tuple; an explicit
+                // `Prov_k(8)` overrides the default bound.
+                self.advance();
+                let k = if self.eat(&Tok::LParen) {
+                    let k = match self.cur() {
+                        Some(Tok::IntLit(n)) if *n >= 1 && *n <= u32::MAX as i64 => *n as u32,
+                        _ => {
+                            self.err_expected("a positive proof bound (`Prov_k(3)`)");
+                            return Err(());
+                        }
+                    };
+                    self.advance();
+                    self.expect(&Tok::RParen, "`)`")?;
+                    k
+                } else {
+                    DEFAULT_TOP_K
+                };
+                return Ok((Annotation::ProvK { k }, span));
+            }
             _ => {
                 self.err_expected("an annotation (`Bool`, `Trop`, `Prov`, `Prov_k`)");
                 return Err(());

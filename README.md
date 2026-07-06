@@ -17,12 +17,13 @@ phases (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 > **gradients** (`?grad`, reverse-mode over the режим-B chain); **neural**
 > predicates (model-sourced soft facts, differentiated back through `?grad`);
 > **structural terms** (`@terms`, constructor terms via hash-consing, with a
-> depth bound and a sound-but-incomplete status); and an **answer-set** (stable
-> model) solver for `@asp` modules. Cross-checked against
+> depth bound and a sound-but-incomplete status); **provenance annotations**
+> (`Prov`/`Prov_k` — every derived fact carries its pedigree, compiled to a
+> circuit for exact or declared-lower-bound marginals); and an **answer-set**
+> (stable model) solver for `@asp` modules. Cross-checked against
 > [Soufflé](https://souffle-lang.github.io/) and fuzzed (10k random programs,
-> naive vs semi-naive and vs Soufflé). Everything beyond this — the GPU backend
-> and `Prov`/`Prov_k` provenance — **parses into valid IR** and returns a stable
-> *"not implemented in Phase 0"* diagnostic.
+> naive vs semi-naive and vs Soufflé). **The whole shipped grammar executes**;
+> the GPU backend runs beside this stack, validated bit-for-bit against it.
 
 ## Quick start
 

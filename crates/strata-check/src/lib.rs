@@ -48,6 +48,10 @@ pub struct Checked {
     /// The hash-cons table for `@terms` compound values: the EDB's compound facts
     /// are interned here, and the evaluator extends it as rule heads build terms.
     pub terms: TermTable,
+    /// Each predicate's declared annotation. Core-IR carries only the executable
+    /// semiring (Prov/Prov_k evaluate set-wise as Bool); the CLI reads this map
+    /// to route Prov/Prov_k predicates through provenance capture + the circuit.
+    pub annotations: HashMap<String, Annotation>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,28 +61,31 @@ struct PredInfo {
 }
 
 impl PredInfo {
-    /// The executable semiring, or `None` for Prov/Prov_k (режим B, out of Phase 0).
-    fn semiring(&self) -> Option<Semiring> {
+    /// The executable Core-IR semiring. Prov/Prov_k tuples are *set-wise* Bool
+    /// (which tuples exist is a Bool question; the provenance DNF each tuple
+    /// carries lives in the provenance evaluator, not in Core-IR).
+    fn semiring(&self) -> Semiring {
         annotation_semiring(&self.annotation)
     }
 }
 
 const NOSPAN: Span = Span { start: 0, end: 0 };
 
-fn annotation_semiring(a: &Annotation) -> Option<Semiring> {
+fn annotation_semiring(a: &Annotation) -> Semiring {
     match a {
-        Annotation::Bool => Some(Semiring::Bool),
-        Annotation::Trop => Some(Semiring::Trop),
-        Annotation::Prov | Annotation::ProvK { .. } => None,
+        Annotation::Bool | Annotation::Prov | Annotation::ProvK { .. } => Semiring::Bool,
+        Annotation::Trop => Semiring::Trop,
     }
 }
 
-/// Bool ⊑ Trop is the only executable coercion; Trop cannot flow into Bool.
-fn coercible(from: Semiring, to: Semiring) -> bool {
-    matches!(
-        (from, to),
-        (Semiring::Bool, _) | (Semiring::Trop, Semiring::Trop)
-    )
+/// A surface name for diagnostics.
+fn ann_name(a: &Annotation) -> String {
+    match a {
+        Annotation::Bool => "Bool".into(),
+        Annotation::Trop => "Trop".into(),
+        Annotation::Prov => "Prov".into(),
+        Annotation::ProvK { k } => format!("Prov_k({k})"),
+    }
 }
 
 /// Check and lower a High-IR program to Core-IR.
@@ -218,21 +225,15 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
                 ),
                 span,
             ),
-            // Non-recursive Prov and Prov_k are режим B (SDD/WMC), not executed
-            // in Phase 0 (D5).
-            Annotation::Prov => diags.error(
+            // Non-recursive Prov (exact circuit) and Prov_k (top-k, recursion
+            // included) are режим B — executed by capture + compilation.
+            Annotation::Prov => {}
+            Annotation::ProvK { k: 0 } => diags.error(
                 codes::NOT_EXECUTABLE,
-                format!(
-                    "probabilistic provenance `{name}` needs режим B (SDD/WMC), \
-                     not implemented in Phase 0"
-                ),
+                format!("`Prov_k(0)` on `{name}` keeps no proofs; the bound must be ≥ 1"),
                 span,
             ),
-            Annotation::ProvK { .. } => diags.error(
-                codes::NOT_EXECUTABLE,
-                format!("`Prov_k` provenance `{name}` is not implemented in Phase 0"),
-                span,
-            ),
+            Annotation::ProvK { .. } => {}
         }
     }
     if diags.has_errors() {
@@ -312,18 +313,22 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
         return Err(diags);
     }
 
-    // 6. Assemble Core-IR predicates (executable ones).
+    // 6. Assemble Core-IR predicates.
     let predicates = order
         .iter()
-        .filter_map(|name| {
+        .map(|name| {
             let info = declared[name];
-            info.semiring().map(|sem| CorePred {
+            CorePred {
                 name: name.clone(),
                 arity: info.arity,
-                semiring: sem,
+                semiring: info.semiring(),
                 stratum: stratum[idx[name.as_str()]],
-            })
+            }
         })
+        .collect();
+    let annotations = declared
+        .iter()
+        .map(|(name, info)| (name.clone(), info.annotation))
         .collect();
 
     Ok(Checked {
@@ -338,6 +343,7 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
         queries,
         neural,
         terms,
+        annotations,
     })
 }
 
@@ -470,27 +476,32 @@ fn check_range_restriction(r: &strata_ir::high::Rule, span: Span, diags: &mut Di
     }
 }
 
-/// Each positive body predicate's semiring must be coercible into the head's
-/// (Bool ⊑ Trop; Trop cannot flow into Bool). [CHECK-4]
+/// Each positive body predicate's annotation must be coercible into the head's
+/// along the 1.7 lattice: `Bool ⊑ Trop`, `Bool ⊑ Prov ⊑ Prov_k`; `Trop` and
+/// `Prov` are incomparable, and soft (`Prov`/`Prov_k`) evidence can never be
+/// laundered back into `Bool`/`Trop` — the taint discipline. [CHECK-4/5]
 fn check_semirings(
     r: &strata_ir::high::Rule,
     span: Span,
     declared: &HashMap<String, PredInfo>,
     diags: &mut Diagnostics,
 ) {
-    let Some(head_sem) = declared.get(&r.head.pred).and_then(|i| i.semiring()) else {
+    let Some(head_ann) = declared.get(&r.head.pred).map(|i| i.annotation) else {
         return;
     };
     for lit in &r.body {
         if let Literal::Pos(a) = lit {
-            if let Some(bs) = declared.get(&a.pred).and_then(|i| i.semiring()) {
-                if !coercible(bs, head_sem) {
+            if let Some(body_ann) = declared.get(&a.pred).map(|i| i.annotation) {
+                if !body_ann.is_coercible_to(&head_ann) {
                     diags.error(
                         codes::SEMIRING_CONFLICT,
                         format!(
-                            "`{}` ({bs:?}) cannot flow into `{}` ({head_sem:?}); \
+                            "`{}` ({}) cannot flow into `{}` ({}); \
                              use an explicit conversion",
-                            a.pred, r.head.pred
+                            a.pred,
+                            ann_name(&body_ann),
+                            r.head.pred,
+                            ann_name(&head_ann)
                         ),
                         span,
                     );
@@ -555,7 +566,7 @@ fn lower_rule(
         })
         .collect();
 
-    let head_sem = declared.get(&r.head.pred).and_then(|i| i.semiring())?;
+    let head_sem = declared.get(&r.head.pred).map(|i| i.semiring())?;
     let st = stratum[idx[r.head.pred.as_str()]];
     Some(CoreRule {
         head,
