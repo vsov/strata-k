@@ -26,6 +26,6 @@ pub mod provenance;
 pub mod topk;
 
 pub use circuit::{Builder, Circuit, Node};
-pub use compile::compile_exact;
+pub use compile::{compile_exact, compile_exact_bounded, BudgetExceeded, MAX_CIRCUIT_NODES};
 pub use provenance::{build_dnf, sum_circuit};
 pub use topk::{top_k_signed, topk_circuit};

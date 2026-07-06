@@ -79,7 +79,13 @@ pub fn top_k_signed(proofs: &[Vec<i64>], p: &[f64], k: usize) -> Vec<Vec<i64>> {
 /// The `Prov_k` circuit: exact WMC/grad over the **union** of the top-k proofs.
 /// A guaranteed lower bound on the exact marginal (the kept proofs are a subset
 /// of all proofs), monotone in `k`, equal to exact once `k` covers every proof.
-pub fn topk_circuit(proofs: &[Vec<i64>], p: &[f64], k: usize, num_leaves: usize) -> Circuit {
+/// Inherits [`compile_exact`]'s node budget (small `k` keeps it comfortably in).
+pub fn topk_circuit(
+    proofs: &[Vec<i64>],
+    p: &[f64],
+    k: usize,
+    num_leaves: usize,
+) -> Result<Circuit, crate::compile::BudgetExceeded> {
     compile_exact(&top_k_signed(proofs, p, k), num_leaves)
 }
 
@@ -115,9 +121,9 @@ mod tests {
         // probability); union-WMC = 1 - 0.01 = 0.99 — the exact marginal.
         let proofs = vec![vec![1], vec![2]];
         let p = [0.9, 0.9];
-        let full = topk_circuit(&proofs, &p, 2, 2).wmc(&p);
+        let full = topk_circuit(&proofs, &p, 2, 2).unwrap().wmc(&p);
         assert!((full - 0.99).abs() < 1e-12);
-        let k1 = topk_circuit(&proofs, &p, 1, 2).wmc(&p);
+        let k1 = topk_circuit(&proofs, &p, 1, 2).unwrap().wmc(&p);
         assert!((k1 - 0.9).abs() < 1e-12);
         assert!(k1 <= full);
     }
@@ -127,10 +133,10 @@ mod tests {
         // Chain-and-shortcut proofs with shared leaves.
         let proofs = vec![vec![1, 2], vec![1, 3], vec![2, 3], vec![4]];
         let p = [0.6, 0.5, 0.4, 0.3];
-        let exact = crate::compile::compile_exact(&proofs, 4).wmc(&p);
+        let exact = crate::compile::compile_exact(&proofs, 4).unwrap().wmc(&p);
         let mut prev = 0.0;
         for k in 1..=4 {
-            let lb = topk_circuit(&proofs, &p, k, 4).wmc(&p);
+            let lb = topk_circuit(&proofs, &p, k, 4).unwrap().wmc(&p);
             assert!(lb + 1e-12 >= prev, "k={k}: {lb} < {prev}");
             assert!(lb <= exact + 1e-12, "k={k}: {lb} > exact {exact}");
             prev = lb;

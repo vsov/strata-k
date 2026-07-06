@@ -41,6 +41,11 @@ pub type Proof = BTreeSet<i64>;
 /// A tuple's provenance: an absorption-minimal antichain of proofs.
 pub type ProofSet = BTreeSet<Proof>;
 
+/// The per-tuple budget for exact capture: a tuple whose minimal proof
+/// antichain grows past this is refused with [`ProvError::ProofBudget`] — the
+/// declared escape valve is `Prov_k`, not an OOM.
+pub const MAX_PROOFS_PER_TUPLE: usize = 10_000;
+
 /// How a predicate's provenance is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvMode {
@@ -64,6 +69,9 @@ pub enum ProvError {
     /// An aggregate over soft-supported bindings — correlated counting is
     /// refused; aggregates must rest on certain tuples only.
     SoftAggregate(String),
+    /// A tuple's minimal proof antichain exceeded the capture budget; exact
+    /// provenance refuses the blow-up (`Prov_k` is the declared alternative).
+    ProofBudget { pred: String, bound: usize },
     /// The underlying Bool machinery failed (unknown predicate, safety, ...).
     Eval(EvalError),
 }
@@ -85,6 +93,12 @@ impl std::fmt::Display for ProvError {
                 f,
                 "aggregate over soft-supported `{p}` tuples is not supported by capture; \
                  aggregates must rest on certain evidence"
+            ),
+            ProvError::ProofBudget { pred, bound } => write!(
+                f,
+                "`{pred}` accumulated more than {bound} minimal proofs for one tuple; \
+                 exact provenance refuses the blow-up — annotate it `Prov_k(k)` for a \
+                 declared lower bound"
             ),
             ProvError::Eval(e) => write!(f, "{e}"),
         }
@@ -196,6 +210,17 @@ pub fn run_prov(
     prob: &[(String, Tuple, f64)],
     modes: &HashMap<String, ProvMode>,
 ) -> Result<ProvDb, ProvError> {
+    run_prov_with_budget(core, certain, prob, modes, MAX_PROOFS_PER_TUPLE)
+}
+
+/// [`run_prov`] with an explicit per-tuple proof budget (tests use tiny ones).
+pub fn run_prov_with_budget(
+    core: &CoreProgram,
+    certain: &[(String, Tuple)],
+    prob: &[(String, Tuple, f64)],
+    modes: &HashMap<String, ProvMode>,
+    max_proofs_per_tuple: usize,
+) -> Result<ProvDb, ProvError> {
     if let Some(p) = core
         .predicates
         .iter()
@@ -277,6 +302,7 @@ pub fn run_prov(
                     &mut binding,
                     &mut acc,
                     &mut derived,
+                    max_proofs_per_tuple,
                 )
                 .map_err(EvalErrorOrProv::into_prov)?;
             }
@@ -298,6 +324,12 @@ pub fn run_prov(
                 if let (true, Some(k)) = (local, topk) {
                     prune_top_k(set, k, prob);
                     local = Some(&*set) != before.as_ref();
+                } else if local && set.len() > max_proofs_per_tuple {
+                    // Exact capture past the budget: refuse, name the valve.
+                    return Err(ProvError::ProofBudget {
+                        pred,
+                        bound: max_proofs_per_tuple,
+                    });
                 }
                 changed |= local;
             }
@@ -321,6 +353,7 @@ fn solve_prov(
     binding: &mut [Option<GroundVal>],
     acc: &mut ProofSet,
     out: &mut Vec<(String, Tuple, ProofSet)>,
+    max_proofs: usize,
 ) -> Result<(), EvalErrorOrProv> {
     if idx == rule.body.len() {
         // Head grounding cannot build compounds here (capture is term-read-only);
@@ -348,6 +381,15 @@ fn solve_prov(
                     if next.is_empty() {
                         continue; // contradictory support: x·x̄ = 0
                     }
+                    // Budget the *intermediate* DNF too: the blow-up must be
+                    // refused while it is happening, not after the whole batch
+                    // has been materialized.
+                    if next.len() > max_proofs {
+                        return Err(EvalErrorOrProv::Prov(ProvError::ProofBudget {
+                            pred: rule.head.pred.clone(),
+                            bound: max_proofs,
+                        }));
+                    }
                     solve_prov(
                         db,
                         pred_stratum,
@@ -358,6 +400,7 @@ fn solve_prov(
                         &mut b,
                         &mut next,
                         out,
+                        max_proofs,
                     )?;
                 }
             }
@@ -387,6 +430,7 @@ fn solve_prov(
                     binding,
                     acc,
                     out,
+                    max_proofs,
                 );
             };
             let rel = db
@@ -405,6 +449,7 @@ fn solve_prov(
                     binding,
                     acc,
                     out,
+                    max_proofs,
                 ),
                 Some(proofs) => {
                     if proofs.contains(&Proof::new()) {
@@ -434,6 +479,7 @@ fn solve_prov(
                             binding,
                             &mut next,
                             out,
+                            max_proofs,
                         )
                     } else {
                         Err(EvalErrorOrProv::Prov(ProvError::SoftNegation(
@@ -830,6 +876,28 @@ mod tests {
         // A soft edge in the aggregate body is refused.
         let err = run_prov(&core, &certain, &[edge(0, 3, 0.5)], &HashMap::new()).unwrap_err();
         assert!(matches!(err, ProvError::SoftAggregate(p) if p == "edge"));
+    }
+
+    #[test]
+    fn proof_budget_refuses_the_blowup_and_names_the_valve() {
+        // Many parallel routes a→d: with a tiny per-tuple budget the exact
+        // capture refuses; the same program under Prov_k pruning stays fine.
+        let core = tc_program();
+        let prob: Vec<_> = (1..=4)
+            .flat_map(|m| vec![edge(0, m, 0.5), edge(m, 5, 0.5)])
+            .collect();
+        let err = run_prov_with_budget(&core, &[], &prob, &HashMap::new(), 2).unwrap_err();
+        match &err {
+            ProvError::ProofBudget { pred, bound } => {
+                assert_eq!(pred, "path");
+                assert_eq!(*bound, 2);
+                assert!(err.to_string().contains("Prov_k"), "{err}");
+            }
+            other => panic!("expected ProofBudget, got {other:?}"),
+        }
+        let modes = HashMap::from([("path".to_string(), ProvMode::TopK(2))]);
+        run_prov_with_budget(&core, &[], &prob, &modes, 2)
+            .expect("Prov_k pruning keeps the same program inside the budget");
     }
 
     #[test]

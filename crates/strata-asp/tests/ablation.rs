@@ -156,6 +156,16 @@ fn ablate(name: &str, graphs: &[Graph], effort: impl Fn(u64, u64) -> u64) {
     eprintln!("ablation [{name}] effort — baseline {base}, GNN {gnn}, anti {anti}");
 }
 
+/// Under `STRATA_REQUIRE_ORACLES` (the oracle CI job), a missing external
+/// oracle is a hard failure — the differential must actually run. Locally,
+/// absence skips cleanly (INFRA-11).
+fn skip_or_die(what: &str) {
+    if std::env::var_os("STRATA_REQUIRE_ORACLES").is_some() {
+        panic!("{what} — but STRATA_REQUIRE_ORACLES is set, the oracle differential must run");
+    }
+    eprintln!("skipping: {what}");
+}
+
 #[test]
 fn gnn_ablation_two_regimes() {
     let mut rng = Rng(0x5EED_5EED);
@@ -167,7 +177,7 @@ fn gnn_ablation_two_regimes() {
         colors: 3,
     };
     if run(&program(&probe, Guide::None), false).is_none() {
-        eprintln!("skipping ablation: clingo not installed");
+        skip_or_die("ablation: clingo not installed");
         return;
     }
 

@@ -151,6 +151,16 @@ fn scratch(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("strata_souffle_{}_{name}", std::process::id()))
 }
 
+/// Under `STRATA_REQUIRE_ORACLES` (the oracle CI job), a missing external
+/// oracle is a hard failure — the differential must actually run. Locally,
+/// absence skips cleanly (INFRA-11).
+fn skip_or_die(what: &str) {
+    if std::env::var_os("STRATA_REQUIRE_ORACLES").is_some() {
+        panic!("{what} — but STRATA_REQUIRE_ORACLES is set, the oracle differential must run");
+    }
+    eprintln!("skipping: {what}");
+}
+
 fn diff(name: &str, src: &str) {
     let (prog, diags) = parse(src);
     assert!(!diags.has_errors(), "{}", diags.render_text(src));
@@ -159,7 +169,9 @@ fn diff(name: &str, src: &str) {
     let dir = scratch(name);
     let _ = std::fs::remove_dir_all(&dir);
     let Some(souffle) = souffle_relations(&checked, &dir) else {
-        eprintln!("skipping {name}: souffle unavailable or program not Bool-comparable");
+        skip_or_die(&format!(
+            "{name}: souffle unavailable or program not Bool-comparable"
+        ));
         return;
     };
     let ours = our_relations(&checked);
@@ -359,7 +371,7 @@ fn fuzz_bool_vs_souffle() {
 
     // Probe once so absence of souffle skips cleanly instead of looping.
     if souffle_relations(&gen_bool(0), &dir).is_none() {
-        eprintln!("skipping fuzz_bool_vs_souffle: souffle unavailable");
+        skip_or_die("fuzz_bool_vs_souffle: souffle unavailable");
         return;
     }
     for seed in 0..n {

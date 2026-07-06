@@ -75,8 +75,15 @@ edge(a, b).            % a plain Bool fact
 
 - A plain fact has no annotation.
 - `w :: atom` annotates a `Trop` fact with an integer weight `w` (`i64`).
-- `p :: atom` annotates a Bool fact with a probability `p ∈ [0, 1]` (see
+- `p :: atom` annotates a soft fact with a probability `p ∈ [0, 1]` (see
   [Probabilistic queries](#probabilistic-queries)).
+
+The `::` must fit the predicate's declared annotation, and the checker enforces
+it (`E1009`): an integer weight belongs on `Trop` predicates only (`5 :: e(...)`
+on a `Bool` predicate is the classic silent typo — a probability needs the
+decimal point, `0.5 ::`); a probability belongs on `Bool`/`Prov`/`Prov_k`
+predicates only and must lie in `[0, 1]`; and a `Trop` fact must carry a weight
+(a bare tropical fact has no meaningful value to combine).
 
 Facts must be ground; a fact containing a variable is rejected (`E1004`).
 
@@ -258,6 +265,12 @@ soft-supported tuples, and `@terms` combined with provenance. The exact
 enumeration oracle continues to cover the first two world-by-world on `Bool`
 predicates, and the two pipelines are differentially tested against each other.
 
+Proof growth is budgeted, because real data can be exponential without asking
+permission: exact capture refuses a tuple whose minimal-proof set passes
+10 000 proofs, and circuit compilation refuses past 2²⁰ nodes — both with a
+typed error naming the valve (`Prov_k`), never an OOM. `Prov_k` capture prunes
+as it goes, so it stays inside the budget by construction.
+
 ## Neural predicates
 
 A `neural` predicate declares that its ground atoms are the **soft outputs of a
@@ -351,9 +364,17 @@ Answer 4: {node(x), node(y), out(x), out(y)}
 
 The reference solver grounds over the Herbrand universe and enumerates stable
 models via the reduct. A program with no stable model prints `UNSATISFIABLE`.
-`@asp` bypasses the stratifying checker (parse-level well-formedness suffices),
-because stable-model semantics is exactly what handles the unstratified negation
-the deductive core forbids.
+`@asp` skips the *stratifying* checker only — unstratified negation is the
+point of stable-model semantics — while declarations, arity, and fact
+groundness stay mandatory (`E1001`/`E1005`/`E1004`): the mistyped-predicate
+promise is a global property of the language, not a per-mode courtesy. It
+bypasses the semiring machinery because stable-model semantics is exactly what
+handles the unstratified negation the deductive core forbids — and everything
+that machinery would have owned is *refused by name* rather than silently
+dropped (`E1011`): `::` fact annotations, compound (`@terms`) facts, queries,
+`input` declarations, and `neural` predicates are not supported under `@asp`.
+A grounding with an empty Herbrand universe simply has no instantiations (the
+empty model, if stable, is the answer).
 
 ## Loading facts (EDB)
 
@@ -390,8 +411,10 @@ machine-applicable fix. The front-end owns the `E0xxx` range, the checker the
 | `E1006` | `Prov_k(0)` — the proof bound must be ≥ 1 |
 | `E1007` | rule mixes incompatible semirings |
 | `E1008` | forbidden cell of the semiring×recursion table (2.4) |
-| `E1009` | fact annotation mismatch (`float ::` on non-Bool / `int ::` on non-Trop) |
-| `E1010` | certain fact on a `neural` predicate (model outputs must be soft) |
+| `E1009` | fact `::` mismatch: `int ::` off `Trop`, probability on `Trop` or outside [0, 1], bare `Trop` fact |
+| `E1010` | certain fact on a `neural` predicate — inline or via `input` (model outputs must be soft) |
+| `E1011` | construct with no meaning under `@asp`: `::` annotations, compound facts, queries, `input`, `neural` |
+| `E1012` | predicate redeclared with a conflicting signature |
 
 `strata check --error-format=json` emits the same diagnostics as machine-readable
 JSON.

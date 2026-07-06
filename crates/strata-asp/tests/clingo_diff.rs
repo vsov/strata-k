@@ -113,6 +113,16 @@ fn fact2(pred: &str, a: i64, b: i64) -> GroundAtom {
     (pred.to_string(), vec![Val::Int(a), Val::Int(b)])
 }
 
+/// Under `STRATA_REQUIRE_ORACLES` (the oracle CI job), a missing external
+/// oracle is a hard failure — the differential must actually run. Locally,
+/// absence skips cleanly (INFRA-11).
+fn skip_or_die(what: &str) {
+    if std::env::var_os("STRATA_REQUIRE_ORACLES").is_some() {
+        panic!("{what} — but STRATA_REQUIRE_ORACLES is set, the oracle differential must run");
+    }
+    eprintln!("skipping: {what}");
+}
+
 /// Assert our reference answer sets equal clingo's, projected to `show_pred`.
 /// Skips if clingo is unavailable.
 fn assert_agrees(
@@ -124,11 +134,11 @@ fn assert_agrees(
     show_pred: &str,
 ) {
     let Some(c_models) = clingo_models(lp) else {
-        eprintln!("skipping {name}: clingo not installed");
+        skip_or_die(&format!("{name}: clingo not installed"));
         return;
     };
     let Some(ours) = our_models(rules, facts, cons, show_pred) else {
-        eprintln!("skipping {name}: clasp not installed");
+        skip_or_die(&format!("{name}: clasp not installed"));
         return;
     };
     assert_eq!(

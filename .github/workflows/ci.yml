@@ -22,12 +22,34 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
 
-  # INFRA-11: Soufflé is required only by the differential (Bool) jobs.
-  # Non-Soufflé exit harnesses (INFRA-6/7/8) run in `build` above.
-  # This job is wired here as a stub so the dependency is documented from day one.
-  souffle-diff:
+  # INFRA-11: the external differential oracles are MANDATORY here — a missing
+  # binary fails the job (STRATA_REQUIRE_ORACLES), it does not silently skip.
+  # `build` above stays oracle-free so the core loop is fast and hermetic;
+  # skip-if-absent remains a local-development courtesy only.
+  oracle-diff:
     runs-on: ubuntu-latest
-    if: false # TODO(INFRA-11): flip on once souffle is pinned/installed
+    env:
+      STRATA_REQUIRE_ORACLES: 1
     steps:
       - uses: actions/checkout@v4
-      - run: echo "souffle differential stub — see crates/strata-cli/tests/souffle_diff.rs"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install clingo/gringo/clasp (Ubuntu; the clingo binary ships in the gringo package)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gringo clasp
+          clingo --version
+          gringo --version
+          clasp --version || true # clasp --version exits nonzero on some builds
+      - name: Install Soufflé 2.5 (pinned release .deb)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/souffle.deb \
+            https://github.com/souffle-lang/souffle/releases/download/2.5/x86_64-ubuntu-2404-souffle-2.5-Linux.deb
+          sudo apt-get install -y /tmp/souffle.deb
+          souffle --version
+      - name: Soufflé differential (Bool engine vs souffle, incl. fuzz)
+        run: cargo test -p strata-cli --test souffle_diff
+      - name: clingo/clasp differentials (ASP stack)
+        run: cargo test -p strata-asp

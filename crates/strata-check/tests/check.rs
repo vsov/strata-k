@@ -259,6 +259,168 @@ q(a).
 }
 
 #[test]
+fn fact_annotation_contract_e1009() {
+    // Every cell of the fact `::` × declared-annotation table (E1009).
+    let bad = [
+        // int weight on non-Trop: the silently-accepted-typos hole.
+        "pred e(node, node): Bool.\n5 :: e(a, b).\n",
+        "pred p(node): Prov.\n5 :: p(a).\n",
+        "pred r(node): Prov_k(2).\n5 :: r(a).\n",
+        // probability on Trop.
+        "pred w(node, node): Trop.\n0.5 :: w(a, b).\n",
+        // probability outside [0, 1].
+        "pred q(node): Bool.\n1.5 :: q(a).\n",
+        // bare fact on Trop: would panic the tropical fixpoint downstream.
+        "pred w(node, node): Trop.\nw(a, b).\n",
+    ];
+    for src in bad {
+        let codes = check(src).expect_err(&format!("must reject:\n{src}"));
+        assert!(
+            codes.contains(&codes::FACT_ANNOTATION_MISMATCH.0),
+            "expected E1009 for:\n{src}\ngot {codes:?}"
+        );
+    }
+    // The well-typed cells still lower.
+    let good = [
+        "pred e(node, node): Bool.\ne(a, b).\n",
+        "pred e(node, node): Bool.\n0.5 :: e(a, b).\n",
+        "pred w(node, node): Trop.\n5 :: w(a, b).\n",
+        "pred p(node): Prov.\np(a).\n",
+        "pred p(node): Prov.\n0.9 :: p(a).\n",
+    ];
+    for src in good {
+        check(src).unwrap_or_else(|e| panic!("must accept:\n{src}\ngot {e:?}"));
+    }
+}
+
+#[test]
+fn asp_refuses_what_it_cannot_mean_e1011() {
+    use strata_check::check_asp_declarations;
+    // Every construct the @asp runner used to silently drop is now refused by
+    // name: `::` annotations, non-ground/compound facts, queries, `input`,
+    // and `neural` declarations.
+    let cases: &[(&str, u16)] = &[
+        (
+            "@asp.\npred a(): Bool.\n0.5 :: a().\n",
+            codes::ASP_UNSUPPORTED.0,
+        ),
+        (
+            "@asp.\npred a(): Bool.\n5 :: a().\n",
+            codes::ASP_UNSUPPORTED.0,
+        ),
+        (
+            "@asp.\npred p(node): Bool.\np(X).\n",
+            codes::NON_GROUND_FACT.0,
+        ),
+        (
+            "@asp.\npred p(node): Bool.\np(box(a)).\n",
+            codes::ASP_UNSUPPORTED.0,
+        ),
+        (
+            "@asp.\npred a(): Bool.\na().\n? a().\n",
+            codes::ASP_UNSUPPORTED.0,
+        ),
+        (
+            "@asp.\npred e(node, node): Bool.\ninput e from \"edges.tsv\".\n",
+            codes::ASP_UNSUPPORTED.0,
+        ),
+        (
+            "@asp.\ndomain firm.\nneural f(firm) from model \"m\".\n0.9 :: f(acme).\n",
+            codes::ASP_UNSUPPORTED.0,
+        ),
+    ];
+    for (src, want) in cases {
+        let (prog, d) = parse(src);
+        assert!(!d.has_errors(), "parse errors for:\n{src}");
+        let diags = check_asp_declarations(&prog).expect_err(&format!("must reject:\n{src}"));
+        let got: Vec<u16> = diags.items().iter().map(|x| x.code.0).collect();
+        assert!(
+            got.contains(want),
+            "expected E{want} for:\n{src}\ngot {got:?}"
+        );
+    }
+}
+
+#[test]
+fn conflicting_redeclaration_is_rejected_e1012() {
+    // Last-wins redeclaration would make every downstream check order-dependent.
+    let src = "\
+pred e(node, node): Bool.
+pred e(node, node): Trop.
+5 :: e(a, b).
+";
+    let codes_got = check(src).unwrap_err();
+    assert!(
+        codes_got.contains(&codes::CONFLICTING_DECLARATION.0),
+        "got {codes_got:?}"
+    );
+    // An identical redeclaration is harmless.
+    check("pred e(node): Bool.\npred e(node): Bool.\ne(a).\n").expect("identical redecl ok");
+    // And @asp checks arity conflicts too.
+    let (prog, _) = parse("@asp.\npred a(node): Bool.\npred a(node, node): Bool.\na(x).\n");
+    let diags = strata_check::check_asp_declarations(&prog).unwrap_err();
+    let got: Vec<u16> = diags.items().iter().map(|x| x.code.0).collect();
+    assert!(
+        got.contains(&codes::CONFLICTING_DECLARATION.0),
+        "got {got:?}"
+    );
+}
+
+#[test]
+fn input_onto_a_neural_predicate_is_e1010() {
+    // A TSV row is a certain fact — the E1010 category error via a side door.
+    let src = "\
+domain firm.
+neural flag(firm) from model \"m\".
+input flag from \"flags.tsv\".
+0.9 :: flag(acme).
+";
+    let codes_got = check(src).unwrap_err();
+    assert!(
+        codes_got.contains(&codes::NEURAL_FACT_NOT_SOFT.0),
+        "got {codes_got:?}"
+    );
+}
+
+#[test]
+fn asp_requires_declarations_too() {
+    use strata_check::check_asp_declarations;
+    // Undeclared predicate inside @asp: the signature promise is global.
+    let (prog, d) = parse("@asp.\na() :- not b().\n");
+    assert!(!d.has_errors());
+    let diags = check_asp_declarations(&prog).unwrap_err();
+    let codes: Vec<u16> = diags.items().iter().map(|x| x.code.0).collect();
+    assert!(codes.contains(&codes::UNDECLARED_PRED.0), "got {codes:?}");
+
+    // Arity mismatch is caught as well.
+    let (prog, _) = parse("@asp.\npred a(node): Bool.\na() :- not a(x).\n");
+    let diags = check_asp_declarations(&prog).unwrap_err();
+    let codes: Vec<u16> = diags.items().iter().map(|x| x.code.0).collect();
+    assert!(codes.contains(&codes::ARITY_MISMATCH.0), "got {codes:?}");
+
+    // A fully declared ASP program passes (no stratification demanded).
+    let (prog, _) =
+        parse("@asp.\npred a(): Bool.\npred b(): Bool.\na() :- not b().\nb() :- not a().\n");
+    check_asp_declarations(&prog).expect("declared @asp checks");
+}
+
+#[test]
+fn neural_weighted_fact_is_rejected() {
+    // `5 :: flag(...)` on a neural predicate: an integer weight on a Bool-side
+    // predicate is E1009 (neural facts must be probabilities).
+    let src = "\
+domain firm.
+neural flag(firm) from model \"m\".
+5 :: flag(acme).
+";
+    let codes = check(src).expect_err("weighted neural fact must fail");
+    assert!(
+        codes.contains(&codes::FACT_ANNOTATION_MISMATCH.0),
+        "got {codes:?}"
+    );
+}
+
+#[test]
 fn trop_into_bool_is_a_semiring_conflict() {
     let src = "\
 pred e(node, node): Trop.

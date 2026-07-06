@@ -48,31 +48,74 @@ pub(crate) fn normalize(proofs: &[Vec<i64>]) -> Dnf {
     min
 }
 
-/// Compile proofs into an exact circuit over `num_leaves` probabilistic facts.
-/// No proofs ⇒ `false`; an empty proof ⇒ `true` (the tuple is certain).
-pub fn compile_exact(proofs: &[Vec<i64>], num_leaves: usize) -> Circuit {
+/// The default circuit-size budget. Shannon compilation is worst-case
+/// exponential — the honest #P bill — so past this many nodes it stops with a
+/// typed error instead of quietly eating the machine.
+pub const MAX_CIRCUIT_NODES: usize = 1 << 20;
+
+/// Compilation exceeded its node budget. The escape valves are declared, not
+/// silent: `Prov_k` (top-k lower bound) or fewer soft facts in the slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetExceeded {
+    pub max_nodes: usize,
+}
+
+impl std::fmt::Display for BudgetExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "provenance circuit exceeded its {}-node budget (exact compilation is \
+             #P-hard); annotate the predicate `Prov_k(k)` for a declared lower bound",
+            self.max_nodes
+        )
+    }
+}
+
+impl std::error::Error for BudgetExceeded {}
+
+/// Compile proofs into an exact circuit over `num_leaves` probabilistic facts,
+/// under the default node budget. No proofs ⇒ `false`; an empty proof ⇒ `true`
+/// (the tuple is certain).
+pub fn compile_exact(proofs: &[Vec<i64>], num_leaves: usize) -> Result<Circuit, BudgetExceeded> {
+    compile_exact_bounded(proofs, num_leaves, MAX_CIRCUIT_NODES)
+}
+
+/// [`compile_exact`] with an explicit node budget.
+pub fn compile_exact_bounded(
+    proofs: &[Vec<i64>],
+    num_leaves: usize,
+    max_nodes: usize,
+) -> Result<Circuit, BudgetExceeded> {
     let dnf = normalize(proofs);
     let mut b = Builder::new();
     let mut memo: HashMap<Vec<Proof>, usize> = HashMap::new();
-    let root = shannon(&dnf, &mut b, &mut memo);
+    let root = shannon(&dnf, &mut b, &mut memo, max_nodes)?;
     let mut c = b.finish(root);
     // Align the gradient vector with the caller's full leaf space even when the
     // proofs mention only some leaves (cf. `sum_circuit`).
     c.num_leaves = c.num_leaves.max(num_leaves);
-    c
+    Ok(c)
 }
 
-fn shannon(dnf: &Dnf, b: &mut Builder, memo: &mut HashMap<Vec<Proof>, usize>) -> usize {
+fn shannon(
+    dnf: &Dnf,
+    b: &mut Builder,
+    memo: &mut HashMap<Vec<Proof>, usize>,
+    max_nodes: usize,
+) -> Result<usize, BudgetExceeded> {
+    if b.len() > max_nodes {
+        return Err(BudgetExceeded { max_nodes });
+    }
     if dnf.is_empty() {
-        return b.fals();
+        return Ok(b.fals());
     }
     if dnf.contains(&Proof::new()) {
         // Absorption left only the empty proof: certainly true.
-        return b.tru();
+        return Ok(b.tru());
     }
     let key: Vec<Proof> = dnf.iter().cloned().collect();
     if let Some(&n) = memo.get(&key) {
-        return n;
+        return Ok(n);
     }
 
     // Pivot: the most frequent variable — smallest expected cofactors.
@@ -92,8 +135,8 @@ fn shannon(dnf: &Dnf, b: &mut Builder, memo: &mut HashMap<Vec<Proof>, usize>) ->
     // Cofactor v=0: proofs demanding v die; the -v literal is discharged.
     let lo: Dnf = restrict(dnf, v, false);
 
-    let hi_n = shannon(&hi, b, memo);
-    let lo_n = shannon(&lo, b, memo);
+    let hi_n = shannon(&hi, b, memo, max_nodes)?;
+    let lo_n = shannon(&lo, b, memo, max_nodes)?;
     let leaf = (v - 1) as usize;
     let pos = b.leaf(leaf);
     let neg = b.neg_leaf(leaf);
@@ -101,7 +144,7 @@ fn shannon(dnf: &Dnf, b: &mut Builder, memo: &mut HashMap<Vec<Proof>, usize>) ->
     let and_lo = b.and(vec![neg, lo_n]);
     let node = b.or(vec![and_hi, and_lo]);
     memo.insert(key, node);
-    node
+    Ok(node)
 }
 
 /// The cofactor of `dnf` under `var = value`, re-minimized by absorption.
@@ -168,7 +211,7 @@ mod tests {
         // A plain Or would give 0.5 + 0.25 + 0.5 = 1.25.
         let proofs = vec![vec![1], vec![1, 2], vec![2]];
         let p = [0.5, 0.5];
-        let c = compile_exact(&proofs, 2);
+        let c = compile_exact(&proofs, 2).unwrap();
         assert!((c.wmc(&p) - 0.75).abs() < 1e-12, "got {}", c.wmc(&p));
         assert!((c.wmc(&p) - brute(&proofs, &p)).abs() < 1e-12);
     }
@@ -178,7 +221,7 @@ mod tests {
         // The prob.rs example: direct {e1} or via {e2,e3}; P = 1-(1-.5)(1-.25).
         let proofs = vec![vec![1], vec![2, 3]];
         let p = [0.5, 0.5, 0.5];
-        let c = compile_exact(&proofs, 3);
+        let c = compile_exact(&proofs, 3).unwrap();
         assert!((c.wmc(&p) - 0.625).abs() < 1e-12);
     }
 
@@ -211,7 +254,7 @@ mod tests {
                 })
                 .collect();
             let p: Vec<f64> = (0..n).map(|_| (rng() % 1000) as f64 / 1000.0).collect();
-            let c = compile_exact(&proofs, n);
+            let c = compile_exact(&proofs, n).unwrap();
             let (got, grad) = c.grad(&p);
             let want = brute(&proofs, &p);
             assert!(
@@ -241,7 +284,7 @@ mod tests {
         let proofs = vec![vec![1, -1], vec![2], vec![2, 3]];
         let dnf = normalize(&proofs);
         assert_eq!(dnf.len(), 1);
-        let c = compile_exact(&proofs, 3);
+        let c = compile_exact(&proofs, 3).unwrap();
         assert!((c.wmc(&[0.9, 0.4, 0.7]) - 0.4).abs() < 1e-12);
     }
 
@@ -249,7 +292,7 @@ mod tests {
     fn dual_literals_negation() {
         // "a and not b": P = p_a · (1 - p_b).
         let proofs = vec![vec![1, -2]];
-        let c = compile_exact(&proofs, 2);
+        let c = compile_exact(&proofs, 2).unwrap();
         let p = [0.8, 0.3];
         assert!((c.wmc(&p) - 0.8 * 0.7).abs() < 1e-12);
         let (_, g) = c.grad(&p);
@@ -258,10 +301,26 @@ mod tests {
     }
 
     #[test]
+    fn node_budget_trips_deterministically() {
+        // A parity-ish DNF over many variables blows up Shannon compilation;
+        // a tiny budget must produce the typed error, not a hang or OOM.
+        let proofs: Vec<Vec<i64>> = (1..=16)
+            .flat_map(|i| ((i + 1)..=16).map(move |j| vec![i as i64, -(j as i64)]))
+            .collect();
+        let err = compile_exact_bounded(&proofs, 16, 8).unwrap_err();
+        assert_eq!(err.max_nodes, 8);
+        // The same DNF fits comfortably in the default budget.
+        assert!(compile_exact(&proofs, 16).is_ok());
+    }
+
+    #[test]
     fn empty_and_certain() {
-        assert_eq!(compile_exact(&[], 1).wmc(&[0.5]), 0.0);
-        assert_eq!(compile_exact(&[vec![]], 1).wmc(&[0.5]), 1.0);
+        assert_eq!(compile_exact(&[], 1).unwrap().wmc(&[0.5]), 0.0);
+        assert_eq!(compile_exact(&[vec![]], 1).unwrap().wmc(&[0.5]), 1.0);
         // A certain proof absorbs every soft one.
-        assert_eq!(compile_exact(&[vec![1], vec![]], 1).wmc(&[0.5]), 1.0);
+        assert_eq!(
+            compile_exact(&[vec![1], vec![]], 1).unwrap().wmc(&[0.5]),
+            1.0
+        );
     }
 }

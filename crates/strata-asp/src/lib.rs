@@ -250,6 +250,12 @@ fn for_each_assignment(
     mut emit: impl FnMut(&HashMap<String, Val>),
 ) -> Result<(), AspError> {
     let k = vars.len();
+    // An empty universe grounds a rule with variables to nothing at all —
+    // zero assignments, not an index panic (the `strata check`-ok /
+    // `strata run`-panic hole an external review's follow-up found).
+    if k > 0 && universe.is_empty() {
+        return Ok(());
+    }
     let u = universe.len().max(1);
     // universe^k, bounded.
     let total = (0..k)
@@ -454,6 +460,20 @@ fn least_model(n_atoms: usize, rules: &[(usize, &[usize])]) -> HashSet<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_universe_grounds_a_var_rule_to_nothing() {
+        // No constants anywhere: a rule with variables has zero instantiations
+        // (never an index panic), and the empty model is the one stable model.
+        use strata_ir::high::program::{atom, var, Literal, Rule};
+        let rules = vec![Rule {
+            head: atom("p", vec![var("X")]),
+            body: vec![Literal::Neg(atom("q", vec![var("X")]))],
+        }];
+        let models = solve(&rules, &[], &[]).expect("solve");
+        assert_eq!(models.len(), 1);
+        assert!(models[0].is_empty(), "the empty model is stable");
+    }
     use strata_ir::high::program::{atom, var, Rule};
 
     fn a(pred: &str) -> Atom {

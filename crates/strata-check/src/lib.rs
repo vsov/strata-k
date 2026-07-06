@@ -101,17 +101,36 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
     let mut neural_preds: std::collections::HashSet<String> = Default::default();
     for item in &program.items {
         if let ItemKind::Predicate(p) = &item.node {
-            if !declared.contains_key(&p.name) {
-                order.push(p.name.clone());
+            let info = PredInfo {
+                arity: p.sig.args.len() as u32,
+                annotation: p.sig.annotation,
+            };
+            match declared.get(&p.name) {
+                None => {
+                    order.push(p.name.clone());
+                    declared.insert(p.name.clone(), info);
+                    declared_span.insert(p.name.clone(), item.span);
+                }
+                // A conflicting redeclaration must not silently win (it would
+                // make every downstream check order-dependent); an identical
+                // one is harmless.
+                Some(prev) if prev.arity != info.arity || prev.annotation != info.annotation => {
+                    diags.error(
+                        codes::CONFLICTING_DECLARATION,
+                        format!(
+                            "predicate `{}` is redeclared with a conflicting signature \
+                             (arity {} : {}, was arity {} : {})",
+                            p.name,
+                            info.arity,
+                            ann_name(&info.annotation),
+                            prev.arity,
+                            ann_name(&prev.annotation)
+                        ),
+                        item.span,
+                    );
+                }
+                Some(_) => {}
             }
-            declared.insert(
-                p.name.clone(),
-                PredInfo {
-                    arity: p.sig.args.len() as u32,
-                    annotation: p.sig.annotation,
-                },
-            );
-            declared_span.insert(p.name.clone(), item.span);
             if let Some(spec) = &p.neural {
                 if neural_preds.insert(p.name.clone()) {
                     neural.push((p.name.clone(), spec.model.clone()));
@@ -160,6 +179,19 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
             }
             ItemKind::Fact(f) => check_atom(&f.atom, item.span, &mut diags),
             ItemKind::Query(q) => check_atom(&q.atom, item.span, &mut diags),
+            // A TSV row is a certain fact; loading one onto a neural
+            // predicate would be the E1010 category error via a side door.
+            ItemKind::Input(inp) if neural_preds.contains(&inp.pred) => {
+                diags.error(
+                    codes::NEURAL_FACT_NOT_SOFT,
+                    format!(
+                        "`input {} from ...` loads certain facts, but `{}` is a \
+                         neural predicate whose facts are the model's soft outputs",
+                        inp.pred, inp.pred
+                    ),
+                    item.span,
+                );
+            }
             _ => {}
         }
     }
@@ -258,6 +290,14 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
                 }
             }
             ItemKind::Fact(f) => {
+                // The fact's `::` annotation must fit the predicate's declared
+                // annotation (CHECK, E1009): an integer weight is Trop-only, a
+                // probability is soft-only (Bool/Prov/Prov_k) and in [0, 1],
+                // and a Trop fact must carry a weight — a bare Trop fact would
+                // seed a weightless tuple the tropical fixpoint cannot combine.
+                if !check_fact_annotation(f, item.span, &declared, &mut diags) {
+                    continue;
+                }
                 if let Some(args) =
                     ground_fact_args(f, item.span, &mut dict, &mut terms, &mut diags)
                 {
@@ -474,6 +514,220 @@ fn check_range_restriction(r: &strata_ir::high::Rule, span: Span, diags: &mut Di
             });
         }
     }
+}
+
+/// Declaration and arity checks for `@asp` modules. Stable-model semantics
+/// legitimately skips stratification (unstratified negation is the point) and
+/// the semiring machinery (ASP is Bool), but the mandatory-signature promise —
+/// a mistyped predicate is a compile error, never a silently empty relation —
+/// is a *global* property of the language, so `@asp` does not get to bypass it.
+pub fn check_asp_declarations(program: &Program) -> Result<(), Diagnostics> {
+    let mut diags = Diagnostics::new();
+    let mut declared: HashMap<String, u32> = HashMap::new();
+    for item in &program.items {
+        if let ItemKind::Predicate(p) = &item.node {
+            let arity = p.sig.args.len() as u32;
+            if let Some(&prev) = declared.get(&p.name) {
+                if prev != arity {
+                    diags.error(
+                        codes::CONFLICTING_DECLARATION,
+                        format!(
+                            "predicate `{}` is redeclared with arity {} (was {})",
+                            p.name, arity, prev
+                        ),
+                        item.span,
+                    );
+                }
+            } else {
+                declared.insert(p.name.clone(), arity);
+            }
+            // A neural predicate's facts are soft; @asp has no soft facts.
+            if p.neural.is_some() {
+                diags.error(
+                    codes::ASP_UNSUPPORTED,
+                    format!(
+                        "`neural {}` is not supported under `@asp`: stable-model \
+                         semantics has no soft facts",
+                        p.name
+                    ),
+                    item.span,
+                );
+            }
+        }
+    }
+    let mut reported: std::collections::HashSet<String> = Default::default();
+    let mut check_atom =
+        |atom: &Atom, span: Span, diags: &mut Diagnostics| match declared.get(&atom.pred) {
+            None => {
+                if reported.insert(atom.pred.clone()) {
+                    diags.error(
+                        codes::UNDECLARED_PRED,
+                        format!("predicate `{}` is used but never declared", atom.pred),
+                        span,
+                    );
+                }
+            }
+            Some(&arity) => {
+                if arity as usize != atom.args.len() {
+                    diags.error(
+                        codes::ARITY_MISMATCH,
+                        format!(
+                            "predicate `{}` expects {} argument(s), found {}",
+                            atom.pred,
+                            arity,
+                            atom.args.len()
+                        ),
+                        span,
+                    );
+                }
+            }
+        };
+    for item in &program.items {
+        match &item.node {
+            ItemKind::Rule(r) => {
+                check_atom(&r.head, item.span, &mut diags);
+                for lit in &r.body {
+                    check_atom(literal_atom(lit), item.span, &mut diags);
+                }
+            }
+            ItemKind::Fact(f) => {
+                check_atom(&f.atom, item.span, &mut diags);
+                // @asp facts are certain Bool atoms: a `::` annotation would be
+                // silently reinterpreted as certainty — refuse it by name.
+                if f.weight.is_some() || f.prob.is_some() {
+                    diags.error(
+                        codes::ASP_UNSUPPORTED,
+                        format!(
+                            "`:: {}(...)` — fact annotations (weights/probabilities) are \
+                             not supported under `@asp`; stable-model facts are certain",
+                            f.atom.pred
+                        ),
+                        item.span,
+                    );
+                }
+                // The grounder instantiates over constants/integers only; a
+                // variable or compound argument would be silently dropped.
+                for t in &f.atom.args {
+                    match t {
+                        Term::Const { .. } | Term::Int { .. } => {}
+                        Term::Var { .. } | Term::Agg { .. } => {
+                            diags.error(
+                                codes::NON_GROUND_FACT,
+                                format!("fact `{}` contains a non-ground term", f.atom.pred),
+                                item.span,
+                            );
+                            break;
+                        }
+                        Term::Compound { .. } => {
+                            diags.error(
+                                codes::ASP_UNSUPPORTED,
+                                format!(
+                                    "fact `{}` carries a compound term; `@terms` values are \
+                                     not supported under `@asp`",
+                                    f.atom.pred
+                                ),
+                                item.span,
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            ItemKind::Query(q) => {
+                // The ASP runner enumerates stable models; it answers no queries.
+                diags.error(
+                    codes::ASP_UNSUPPORTED,
+                    format!(
+                        "`? {}(...)` — queries are not supported under `@asp`; the run \
+                         enumerates the stable models instead",
+                        q.atom.pred
+                    ),
+                    item.span,
+                );
+            }
+            ItemKind::Input(inp) => {
+                // The @asp runner never loads TSV EDBs; a silently empty
+                // relation is exactly what the signature promise forbids.
+                diags.error(
+                    codes::ASP_UNSUPPORTED,
+                    format!(
+                        "`input {} from ...` is not supported under `@asp`; \
+                         inline the facts",
+                        inp.pred
+                    ),
+                    item.span,
+                );
+            }
+            _ => {}
+        }
+    }
+    if diags.has_errors() {
+        Err(diags)
+    } else {
+        Ok(())
+    }
+}
+
+/// A fact's `::` annotation against the predicate's declared annotation
+/// (E1009). Returns whether the fact is well-formed (callers skip lowering a
+/// bad fact so it cannot leak a mistyped annotation into the EDB). [CHECK]
+fn check_fact_annotation(
+    f: &strata_ir::high::program::Fact,
+    span: Span,
+    declared: &HashMap<String, PredInfo>,
+    diags: &mut Diagnostics,
+) -> bool {
+    let Some(info) = declared.get(&f.atom.pred) else {
+        return true; // undeclared already reported (E1001)
+    };
+    let pred = &f.atom.pred;
+    let ann = ann_name(&info.annotation);
+    let is_trop = matches!(info.annotation, Annotation::Trop);
+    if f.weight.is_some() {
+        if !is_trop {
+            diags.error(
+                codes::FACT_ANNOTATION_MISMATCH,
+                format!(
+                    "the fact on `{pred}(...)` carries an integer (tropical) weight, but \
+                     `{pred}` is declared {ann}; a probability needs a decimal point \
+                     (`0.5 ::`), a weight needs the predicate annotated `Trop`"
+                ),
+                span,
+            );
+            return false;
+        }
+    } else if let Some(p) = f.prob {
+        if is_trop {
+            diags.error(
+                codes::FACT_ANNOTATION_MISMATCH,
+                format!(
+                    "`{p} :: {pred}(...)` is a probability, but `{pred}` is declared `Trop`; \
+                     a tropical weight is an integer (`5 ::`)"
+                ),
+                span,
+            );
+            return false;
+        }
+        if !(0.0..=1.0).contains(&p) {
+            diags.error(
+                codes::FACT_ANNOTATION_MISMATCH,
+                format!("probability {p} on `{pred}(...)` is outside [0, 1]"),
+                span,
+            );
+            return false;
+        }
+    } else if is_trop {
+        diags.error(
+            codes::FACT_ANNOTATION_MISMATCH,
+            format!(
+                "`{pred}` is declared `Trop`, so its facts must carry an integer weight \
+                 (`5 :: {pred}(...)`)"
+            ),
+            span,
+        );
+        return false;
+    }
+    true
 }
 
 /// Each positive body predicate's annotation must be coercible into the head's

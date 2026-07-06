@@ -82,6 +82,9 @@ mod tests {
     fn assert_clasp_agrees(rules: &[Rule], facts: &[(String, Vec<Val>)], cons: &[Vec<Literal>]) {
         let g = ground(rules, facts, cons).unwrap();
         let Some(clasp) = solve_with("clasp", &g) else {
+            if std::env::var_os("STRATA_REQUIRE_ORACLES").is_some() {
+                panic!("clasp not installed — but STRATA_REQUIRE_ORACLES is set");
+            }
             eprintln!("skipping: clasp not installed");
             return;
         };

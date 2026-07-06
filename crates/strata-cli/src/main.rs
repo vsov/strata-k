@@ -4,24 +4,29 @@
 //! (D9). Ties strata-front + strata-check + strata-eval into the end-to-end path
 //! text → parse → check → Core-IR → interpret → result.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::ExitCode as ProcExit;
 
-use strata_check::{check_program, Checked};
-use strata_eval::{
-    marginals, prob, run_prov, run_semi_naive, run_terms, Ann, Db, GroundVal, ProvDb, ProvMode,
-};
+use strata_check::check_program;
+use strata_eval::{run_semi_naive, run_terms, Ann, GroundVal};
 use strata_front::{format, parse, print_program};
-use strata_ir::core::{CoreProgram, Semiring};
+use strata_ir::core::CoreProgram;
 use strata_ir::dict::SymbolDict;
-use strata_ir::high::program::{ItemKind, Pragma, QueryKind, Term};
-use strata_ir::high::sig::Annotation;
-use strata_ir::high::Program;
+use strata_ir::high::program::{ItemKind, Pragma, QueryKind};
 use strata_ir::terms::TermTable;
-use strata_ir::trop::Weight;
 use strata_ir::value::GroundFact;
-use strata_prob::compile_exact;
+
+mod asp;
+mod input;
+mod prob;
+mod prov;
+mod render;
+
+use asp::{is_asp, run_asp};
+use input::load_inputs;
+use prob::{grad_mode, prob_mode, run_grad, run_prob};
+use prov::{prov_modes, run_prov_display};
+use render::render_db;
 
 /// Process exit codes. Defined once, reused by every subcommand. [CLI-1]
 #[derive(Debug, Clone, Copy)]
@@ -126,14 +131,23 @@ fn cmd_check(args: &[String]) -> Code {
         return Code::Diagnostics;
     }
     if is_asp(&prog) {
-        // @asp uses stable-model semantics (unstratified negation allowed), so it
-        // bypasses the stratifying checker; parse-level well-formedness suffices.
-        if json {
-            println!("[]");
-        } else {
-            eprintln!("ok (asp)");
-        }
-        return Code::Ok;
+        // @asp uses stable-model semantics (unstratified negation allowed), so
+        // it skips stratification — but not the mandatory-signature promise:
+        // declarations and arity are checked here too.
+        return match strata_check::check_asp_declarations(&prog) {
+            Ok(()) => {
+                if json {
+                    println!("[]");
+                } else {
+                    eprintln!("ok (asp)");
+                }
+                Code::Ok
+            }
+            Err(cdiags) => {
+                emit(&cdiags, &src, json);
+                Code::Diagnostics
+            }
+        };
     }
     match check_program(&prog) {
         Ok(_) => {
@@ -163,7 +177,12 @@ fn cmd_run(args: &[String]) -> Code {
         return Code::Diagnostics;
     }
     if is_asp(&prog) {
-        // ASP (Phase 5): compute stable models via the reference solver.
+        // ASP (Phase 5): declarations first (the signature promise is global),
+        // then stable models via the reference solver.
+        if let Err(cdiags) = strata_check::check_asp_declarations(&prog) {
+            emit(&cdiags, &src, json);
+            return Code::Diagnostics;
+        }
         return match run_asp(&prog) {
             Ok(out) => {
                 print!("{out}");
@@ -245,337 +264,6 @@ fn cmd_run(args: &[String]) -> Code {
             eprintln!("strata: runtime error: {e}");
             Code::Runtime
         }
-    }
-}
-
-fn prob_mode(checked: &Checked) -> bool {
-    !checked.prob_edb.is_empty() || checked.queries.iter().any(|q| q.kind == QueryKind::Prob)
-}
-
-/// Answer probabilistic queries (or dump all marginals) via режим B. [Phase 4]
-fn run_prob(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, String> {
-    let certain: Vec<(String, Vec<GroundVal>)> = certain_facts
-        .iter()
-        .map(|f| (f.pred.clone(), f.args.clone()))
-        .collect();
-    let prob_edb = &checked.prob_edb;
-    let dict = &checked.dict;
-
-    let prob_qs: Vec<_> = checked
-        .queries
-        .iter()
-        .filter(|q| q.kind == QueryKind::Prob)
-        .collect();
-    let mut out = String::new();
-
-    if prob_qs.is_empty() {
-        // No explicit query: print every predicate's marginal, sorted.
-        let m = marginals(&checked.core, &certain, prob_edb).map_err(|e| e.to_string())?;
-        let mut preds: Vec<&String> = m.keys().collect();
-        preds.sort();
-        for pred in preds {
-            let mut tuples: Vec<(&Vec<GroundVal>, &f64)> = m[pred].iter().collect();
-            tuples.sort_by(|a, b| a.0.cmp(b.0));
-            for (tuple, p) in tuples {
-                out.push_str(&prob_line(*p, pred, tuple, dict));
-            }
-        }
-    } else {
-        // A query against a Prov/Prov_k predicate goes through capture +
-        // circuit (spec §2.1 stages 1–3); a Bool predicate stays on the exact
-        // enumeration oracle.
-        let mut captured: Option<ProvDb> = None;
-        for q in prob_qs {
-            match prov_annotation(checked, &q.pred) {
-                Some(ann) => {
-                    let dbp = capture_once(&mut captured, checked, certain_facts)?;
-                    let probs: Vec<f64> = prob_edb.iter().map(|x| x.2).collect();
-                    for (tuple, proofs) in dbp.query(&q.pred, &q.pattern) {
-                        let p = compile_exact(&proofs, probs.len()).wmc(&probs);
-                        out.push_str(&prov_prob_line(p, &q.pred, &tuple, dict, ann));
-                    }
-                }
-                None => {
-                    let ans = prob::query(&checked.core, &certain, prob_edb, &q.pred, &q.pattern)
-                        .map_err(|e| e.to_string())?;
-                    for (tuple, p) in ans {
-                        out.push_str(&prob_line(p, &q.pred, &tuple, dict));
-                    }
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn prob_line(p: f64, pred: &str, tuple: &[GroundVal], dict: &SymbolDict) -> String {
-    let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
-    format!("{p} :: {pred}({})\n", args.join(", "))
-}
-
-// --- Prov / Prov_k (провенанс: capture → compile → WMC) ----------------------
-
-/// The declared provenance annotation of `pred`, if it has one.
-fn prov_annotation<'a>(checked: &'a Checked, pred: &str) -> Option<&'a Annotation> {
-    checked
-        .annotations
-        .get(pred)
-        .filter(|a| matches!(a, Annotation::Prov | Annotation::ProvK { .. }))
-}
-
-/// Capture modes for every Prov/Prov_k predicate; empty ⇒ no provenance here.
-fn prov_modes(checked: &Checked) -> HashMap<String, ProvMode> {
-    checked
-        .annotations
-        .iter()
-        .filter_map(|(name, a)| match a {
-            Annotation::Prov => Some((name.clone(), ProvMode::Exact)),
-            Annotation::ProvK { k } => Some((name.clone(), ProvMode::TopK(*k))),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Run provenance capture at most once per invocation (queries share it).
-fn capture_once<'a>(
-    slot: &'a mut Option<ProvDb>,
-    checked: &Checked,
-    certain_facts: &[GroundFact],
-) -> Result<&'a ProvDb, String> {
-    if slot.is_none() {
-        let certain: Vec<(String, Vec<GroundVal>)> = certain_facts
-            .iter()
-            .map(|f| (f.pred.clone(), f.args.clone()))
-            .collect();
-        let dbp = run_prov(
-            &checked.core,
-            &certain,
-            &checked.prob_edb,
-            &prov_modes(checked),
-        )
-        .map_err(|e| e.to_string())?;
-        *slot = Some(dbp);
-    }
-    Ok(slot.as_ref().unwrap())
-}
-
-/// A marginal line for a provenance predicate: `Prov` is exact, `Prov_k` is a
-/// declared lower bound (И4 — the approximation is visible in the output).
-fn prov_prob_line(
-    p: f64,
-    pred: &str,
-    tuple: &[GroundVal],
-    dict: &SymbolDict,
-    ann: &Annotation,
-) -> String {
-    let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
-    match ann {
-        Annotation::ProvK { k } => {
-            format!(
-                "{p} :: {pred}({})  (lower bound, top-{k})\n",
-                args.join(", ")
-            )
-        }
-        _ => format!("{p} :: {pred}({})\n", args.join(", ")),
-    }
-}
-
-/// One pedigree line per proof: the conjunction of the probabilistic facts a
-/// derivation rests on (`⊤` = rests on certain facts only; `¬[...]` = the
-/// stratified absence of a soft fact — a dual literal).
-fn render_proof(proof: &[i64], checked: &Checked, dict: &SymbolDict) -> String {
-    if proof.is_empty() {
-        return "⊤".to_string();
-    }
-    let mut lits: Vec<i64> = proof.to_vec();
-    lits.sort_by_key(|l| (l.abs(), *l < 0));
-    let parts: Vec<String> = lits
-        .iter()
-        .map(|&l| {
-            let (pred, tuple, pw) = &checked.prob_edb[(l.abs() - 1) as usize];
-            let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
-            let fact = format!("[{pw} :: {pred}({})]", args.join(", "));
-            if l < 0 {
-                format!("¬{fact}")
-            } else {
-                fact
-            }
-        })
-        .collect();
-    parts.join(" ∧ ")
-}
-
-/// Plain `strata run` on a program with Prov/Prov_k predicates: every relation's
-/// tuples with their marginals; provenance-annotated predicates additionally
-/// show their pedigree, one `⇐` line per captured proof.
-fn run_prov_display(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, String> {
-    let mut captured = None;
-    let dbp = capture_once(&mut captured, checked, certain_facts)?;
-    let dict = &checked.dict;
-    let probs: Vec<f64> = checked.prob_edb.iter().map(|x| x.2).collect();
-    let modes = prov_modes(checked);
-
-    let mut out = String::new();
-    for (pred, rel) in &dbp.rels {
-        let ann = prov_annotation(checked, pred);
-        for tuple in rel.keys() {
-            let matches = dbp.query(pred, &vec![None; tuple.len()]);
-            let (_, proofs) = matches.iter().find(|(t, _)| t == tuple).unwrap();
-            let certain = proofs.iter().any(|p| p.is_empty());
-            if certain {
-                let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
-                out.push_str(&format!("{pred}({})\n", args.join(", ")));
-            } else {
-                let p = compile_exact(proofs, probs.len()).wmc(&probs);
-                match ann {
-                    Some(a) => out.push_str(&prov_prob_line(p, pred, tuple, dict, a)),
-                    None => out.push_str(&prob_line(p, pred, tuple, dict)),
-                }
-            }
-            if ann.is_some() {
-                for proof in proofs {
-                    out.push_str(&format!("  ⇐ {}\n", render_proof(proof, checked, dict)));
-                }
-            }
-        }
-    }
-    let mut provk: Vec<(&String, u32)> = modes
-        .iter()
-        .filter_map(|(n, m)| match m {
-            ProvMode::TopK(k) => Some((n, *k)),
-            ProvMode::Exact => None,
-        })
-        .collect();
-    provk.sort();
-    for (pred, k) in provk {
-        out.push_str(&format!(
-            "% status: lower bound (Prov_k) — {pred}: top-{k} proofs per tuple\n"
-        ));
-    }
-    Ok(out)
-}
-
-fn grad_mode(checked: &Checked) -> bool {
-    checked.queries.iter().any(|q| q.kind == QueryKind::Grad)
-}
-
-/// Answer `?grad` queries: the marginal probability of each matching tuple and
-/// its gradient w.r.t. every probabilistic fact's probability (reverse-mode over
-/// the режим-B chain, spec §2.3). [gradient wiring]
-fn run_grad(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, String> {
-    let certain: Vec<(String, Vec<GroundVal>)> = certain_facts
-        .iter()
-        .map(|f| (f.pred.clone(), f.args.clone()))
-        .collect();
-    let prob_edb = &checked.prob_edb;
-    let dict = &checked.dict;
-
-    let mut out = String::new();
-    let mut captured: Option<ProvDb> = None;
-    for q in checked.queries.iter().filter(|q| q.kind == QueryKind::Grad) {
-        // Prov/Prov_k predicates differentiate the compiled circuit (reverse
-        // mode over the chain, spec §2.3); Bool predicates differentiate the
-        // enumeration oracle. Both report ∂/∂p per probabilistic fact.
-        let ans: Vec<(Vec<GroundVal>, f64, Vec<f64>)> = match prov_annotation(checked, &q.pred) {
-            Some(_) => {
-                let dbp = capture_once(&mut captured, checked, certain_facts)?;
-                let probs: Vec<f64> = prob_edb.iter().map(|x| x.2).collect();
-                dbp.query(&q.pred, &q.pattern)
-                    .into_iter()
-                    .map(|(tuple, proofs)| {
-                        let (p, g) = compile_exact(&proofs, probs.len()).grad(&probs);
-                        (tuple, p, g)
-                    })
-                    .collect()
-            }
-            None => prob::grad_query(&checked.core, &certain, prob_edb, &q.pred, &q.pattern)
-                .map_err(|e| e.to_string())?,
-        };
-        for (tuple, p, grad) in ans {
-            match prov_annotation(checked, &q.pred) {
-                Some(a) => out.push_str(&prov_prob_line(p, &q.pred, &tuple, dict, a)),
-                None => out.push_str(&prob_line(p, &q.pred, &tuple, dict)),
-            }
-            // one gradient line per probabilistic fact, labelled by that fact;
-            // a neural fact also names the model the gradient backpropagates into.
-            for ((pred, ptuple, pw), g) in prob_edb.iter().zip(&grad) {
-                let args: Vec<String> = ptuple.iter().map(|v| render_val(v, dict)).collect();
-                let model = checked
-                    .neural
-                    .iter()
-                    .find(|(n, _)| n == pred)
-                    .map(|(_, m)| format!("  (→ model {m:?})"))
-                    .unwrap_or_default();
-                out.push_str(&format!(
-                    "  ∂/∂[{pw} :: {pred}({})] = {g}{model}\n",
-                    args.join(", ")
-                ));
-            }
-        }
-    }
-    Ok(out)
-}
-
-// --- ASP (Phase 5) -----------------------------------------------------------
-
-fn is_asp(prog: &Program) -> bool {
-    prog.items
-        .iter()
-        .any(|i| matches!(&i.node, ItemKind::Pragma(Pragma::Asp)))
-}
-
-/// Enumerate the stable models of an `@asp` program via the reference solver.
-fn run_asp(prog: &Program) -> Result<String, String> {
-    use strata_asp::Val;
-
-    let mut rules = Vec::new();
-    let mut facts: Vec<(String, Vec<Val>)> = Vec::new();
-    for item in &prog.items {
-        match &item.node {
-            ItemKind::Rule(r) => rules.push(r.clone()),
-            ItemKind::Fact(f) => {
-                let mut args = Vec::with_capacity(f.atom.args.len());
-                let mut ground = true;
-                for t in &f.atom.args {
-                    match t {
-                        Term::Const { name } => args.push(Val::Sym(name.clone())),
-                        Term::Int { value } => args.push(Val::Int(*value)),
-                        _ => ground = false,
-                    }
-                }
-                if ground {
-                    facts.push((f.atom.pred.clone(), args));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let models = strata_asp::solve(&rules, &facts, &[]).map_err(|e| e.to_string())?;
-    if models.is_empty() {
-        return Ok("UNSATISFIABLE\n".to_string());
-    }
-    let mut out = String::new();
-    for (i, m) in models.iter().enumerate() {
-        let atoms: Vec<String> = m.iter().map(render_asp_atom).collect();
-        out.push_str(&format!("Answer {}: {{{}}}\n", i + 1, atoms.join(", ")));
-    }
-    Ok(out)
-}
-
-fn render_asp_atom((pred, args): &(String, Vec<strata_asp::Val>)) -> String {
-    if args.is_empty() {
-        pred.clone()
-    } else {
-        let rendered: Vec<String> = args.iter().map(render_asp_val).collect();
-        format!("{pred}({})", rendered.join(", "))
-    }
-}
-
-fn render_asp_val(v: &strata_asp::Val) -> String {
-    match v {
-        strata_asp::Val::Sym(s) => s.clone(),
-        strata_asp::Val::Int(n) => n.to_string(),
     }
 }
 
@@ -676,125 +364,10 @@ fn run_program(
     Ok(out)
 }
 
-/// Load every `input pred from "file.tsv"` declaration's EDB (CLI-5, D10).
-///
-/// TSV convention (Soufflé-compatible): one row per fact, tab-separated columns
-/// interned as symbol constants; a `Trop` predicate has one extra trailing
-/// integer weight column. Constants are interned into `dict` so they align with
-/// the constants the checker already lowered.
-fn load_inputs(
-    program: &Program,
-    core: &CoreProgram,
-    dict: &mut SymbolDict,
-    base: &Path,
-) -> Result<Vec<GroundFact>, String> {
-    let mut out = Vec::new();
-    for item in &program.items {
-        let ItemKind::Input(inp) = &item.node else {
-            continue;
-        };
-        let pred = core
-            .predicates
-            .iter()
-            .find(|p| p.name == inp.pred)
-            .ok_or_else(|| format!("input predicate `{}` is not declared/executable", inp.pred))?;
-        let is_trop = pred.semiring == Semiring::Trop;
-        let ncols = pred.arity as usize + usize::from(is_trop);
-        let path = base.join(&inp.path);
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        for (i, line) in text.lines().enumerate() {
-            let line = line.trim_end_matches('\r');
-            if line.is_empty() {
-                continue;
-            }
-            let cols: Vec<&str> = line.split('\t').collect();
-            if cols.len() != ncols {
-                return Err(format!(
-                    "{}:{}: `{}` expects {ncols} column(s), found {}",
-                    path.display(),
-                    i + 1,
-                    inp.pred,
-                    cols.len()
-                ));
-            }
-            let args = cols[..pred.arity as usize]
-                .iter()
-                .map(|c| GroundVal::Sym(dict.intern(c)))
-                .collect();
-            let weight = if is_trop {
-                let raw = cols[pred.arity as usize];
-                Some(Weight::Finite(raw.parse::<i64>().map_err(|_| {
-                    format!("{}:{}: bad weight {raw:?}", path.display(), i + 1)
-                })?))
-            } else {
-                None
-            };
-            out.push(GroundFact {
-                pred: inp.pred.clone(),
-                args,
-                weight,
-            });
-        }
-    }
-    Ok(out)
-}
-
-/// Canonical output: relations in name order, tuples sorted (BTreeMap), constants
-/// resolved through the dictionary (IR-10). [render half of IR-10]
-fn render_db(db: &Db, dict: &SymbolDict, terms: &TermTable) -> String {
-    let mut out = String::new();
-    for pred in db.predicates() {
-        let rel = db.relation(pred).unwrap();
-        for (tuple, ann) in &rel.rows {
-            let args: Vec<String> = tuple.iter().map(|v| render_val_t(v, dict, terms)).collect();
-            out.push_str(&format!("{pred}({})", args.join(", ")));
-            if let Ann::W(w) = ann {
-                out.push_str(&format!(" = {}", render_weight(*w)));
-            }
-            out.push('\n');
-        }
-    }
-    out
-}
-
-/// Render a ground value; compound terms (`@terms`) are reconstructed structurally
-/// from the term table.
-fn render_val_t(v: &GroundVal, dict: &SymbolDict, terms: &TermTable) -> String {
-    match v {
-        GroundVal::Sym(id) => dict.resolve(*id).unwrap_or("?").to_string(),
-        GroundVal::Int(n) => n.to_string(),
-        GroundVal::Term(id) => {
-            let (functor, args) = terms.get(*id);
-            let inner: Vec<String> = args.iter().map(|a| render_val_t(a, dict, terms)).collect();
-            format!(
-                "{}({})",
-                dict.resolve(functor).unwrap_or("?"),
-                inner.join(", ")
-            )
-        }
-    }
-}
-
-/// Term-free render (probabilistic / gradient paths never produce `@terms`).
-fn render_val(v: &GroundVal, dict: &SymbolDict) -> String {
-    match v {
-        GroundVal::Sym(id) => dict.resolve(*id).unwrap_or("?").to_string(),
-        GroundVal::Int(n) => n.to_string(),
-        GroundVal::Term(id) => format!("<term#{}>", id.0),
-    }
-}
-
-fn render_weight(w: Weight) -> String {
-    match w {
-        Weight::Finite(n) => n.to_string(),
-        Weight::PosInf => strata_ir::output::POS_INF_TOKEN.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use strata_check::Checked;
 
     fn eval_src(src: &str, semi: bool) -> String {
         let (prog, diags) = parse(src);

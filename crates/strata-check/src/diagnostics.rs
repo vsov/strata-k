@@ -29,10 +29,24 @@ pub mod codes {
     /// exact probabilistic provenance through recursion. Carries the nearest
     /// allowed alternative in its message (D9/I4).
     pub const TABLE_2_4_FORBIDDEN: DiagCode = DiagCode(1008);
+    /// A fact's `::` annotation does not fit the predicate's declared
+    /// annotation: an integer weight belongs on `Trop` only, a probability on
+    /// `Bool`/`Prov`/`Prov_k` only and inside [0, 1], and a `Trop` fact must
+    /// carry a weight.
+    pub const FACT_ANNOTATION_MISMATCH: DiagCode = DiagCode(1009);
     /// A fact on a `neural` predicate is not probabilistic: a neural predicate's
     /// ground atoms are a model's soft outputs, so they must carry a probability
     /// (`p :: n(...)`), never be asserted as certain.
     pub const NEURAL_FACT_NOT_SOFT: DiagCode = DiagCode(1010);
+    /// A construct that has no meaning under `@asp` (stable-model semantics):
+    /// `::` fact annotations, `input` declarations, queries, `neural`
+    /// predicates, compound fact arguments. Refused by name, never silently
+    /// dropped.
+    pub const ASP_UNSUPPORTED: DiagCode = DiagCode(1011);
+    /// A predicate is declared more than once with a conflicting signature —
+    /// silently letting the last declaration win would make every other check
+    /// order-dependent.
+    pub const CONFLICTING_DECLARATION: DiagCode = DiagCode(1012);
 
     pub const ALL: &[(DiagCode, &str)] = &[
         (UNDECLARED_PRED, "check.undeclared-predicate"),
@@ -43,7 +57,10 @@ pub mod codes {
         (NOT_EXECUTABLE, "check.not-executable-annotation"),
         (SEMIRING_CONFLICT, "check.semiring-conflict"),
         (TABLE_2_4_FORBIDDEN, "check.table-2.4-forbidden"),
+        (FACT_ANNOTATION_MISMATCH, "check.fact-annotation-mismatch"),
         (NEURAL_FACT_NOT_SOFT, "check.neural-fact-not-soft"),
+        (ASP_UNSUPPORTED, "check.asp-unsupported"),
+        (CONFLICTING_DECLARATION, "check.conflicting-declaration"),
     ];
 }
 

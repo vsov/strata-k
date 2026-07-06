@@ -141,6 +141,13 @@ impl Builder {
         self.nodes.push(n);
         self.nodes.len() - 1
     }
+    /// Nodes built so far — the budget check during compilation.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
     pub fn finish(self, root: usize) -> Circuit {
         Circuit {
             nodes: self.nodes,

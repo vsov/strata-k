@@ -23,7 +23,9 @@ phases (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 > (stable model) solver for `@asp` modules. Cross-checked against
 > [Soufflé](https://souffle-lang.github.io/) and fuzzed (10k random programs,
 > naive vs semi-naive and vs Soufflé). **The whole shipped grammar executes**;
-> the GPU backend runs beside this stack, validated bit-for-bit against it.
+> the GPU backend runs beside this stack, validated bit-for-bit against it on
+> CUDA hardware (`--features cuda`; hosted CI runs the CPU stub — see
+> [Beyond the CPU pipeline](ARCHITECTURE.md#beyond-the-cpu-pipeline)).
 
 ## Quick start
 
@@ -156,7 +158,10 @@ strata-cli     the `strata` binary
 `strata-front` and `strata-check` are siblings that both depend only on
 `strata-ir`; the engine crates (`strata-gpu`, `strata-terms`, `strata-prob`)
 sit beside `strata-eval` and are validated bit-for-bit against the reference
-stack. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full picture and
+stack — for `strata-gpu` that validation needs CUDA hardware
+(`cargo test -p strata-gpu --features cuda`; hosted CI runs the CPU stub, so
+the badge does not cover the GPU differentials). See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the full picture and
 [CONTRIBUTING.md](CONTRIBUTING.md) to build and test.
 
 ## Correctness

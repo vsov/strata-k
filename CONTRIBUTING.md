@@ -39,7 +39,12 @@ The differential fuzzer's program count is tunable:
 STRATA_SOUFFLE_FUZZ_N=10000 cargo test -p strata-cli --test souffle_diff fuzz_bool_vs_souffle
 ```
 
-If `souffle` is not on `PATH`, the Soufflé jobs skip cleanly rather than fail.
+If `souffle` is not on `PATH`, the Soufflé jobs skip cleanly rather than fail —
+a local-development courtesy only. In CI the `oracle-diff` job installs Soufflé
+pinned to a release .deb and clingo/gringo/clasp from the distro (versions
+logged in the job output) and sets `STRATA_REQUIRE_ORACLES=1`, which turns a
+missing oracle into a hard failure: a green badge means the external
+differentials actually ran.
 
 ## The bar for a change (what CI enforces)
 

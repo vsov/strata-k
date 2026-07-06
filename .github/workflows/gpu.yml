@@ -1,0 +1,25 @@
+name: gpu
+
+# The GPU differentials need CUDA hardware, which hosted runners don't have.
+# This workflow is manual (workflow_dispatch) and targets a self-hosted runner
+# labeled `gpu`; it exists so the GPU validation has a first-class, repeatable
+# entry point instead of living only in a shell history. Until such a runner is
+# registered, dispatching it simply queues — the honest state of affairs.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cuda-diff:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: GPU kernels vs CPU oracles (bit-exact)
+        run: cargo test -p strata-gpu --features cuda --release
+      - name: Record the environment the numbers came from
+        run: |
+          nvidia-smi
+          rustc --version

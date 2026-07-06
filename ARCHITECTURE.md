@@ -111,8 +111,9 @@ The reference interpreter is the oracle. Three overlapping checks defend it:
 2. **our Bool engine == Soufflé**, a differential harness that translates Core-IR
    to a Soufflé `.dl` program and compares results
    (`cargo test -p strata-cli --test souffle_diff`, needs `souffle`; skips
-   cleanly if absent). `Trop` is checked against an independent shortest-path
-   oracle instead.
+   cleanly if absent locally — the `oracle-diff` CI job makes it mandatory via
+   `STRATA_REQUIRE_ORACLES=1`). `Trop` is checked against an independent
+   shortest-path oracle instead.
 3. The probabilistic and ASP engines are themselves the slow, obviously-correct
    references (exact enumeration; reduct) that future fast/compiled/GPU methods
    must reproduce bit-for-bit.
@@ -131,7 +132,12 @@ validated bit-for-bit against a reference oracle:
   planner (cost-based ordering, hypertree decomposition, tensor-contraction
   width); radix/hypercube partition groundwork for multi-GPU; and the ASP
   grounding-simplification pass. Every kernel is diffed against an independent
-  CPU oracle.
+  CPU oracle. **Reproducibility caveat, stated plainly:** hosted CI has no
+  CUDA hardware, so the GPU differentials do not run under the badge — they
+  run on a CUDA machine via `cargo test -p strata-gpu --features cuda` (the
+  manual `gpu` workflow dispatches exactly that on a self-hosted runner).
+  On CPU-only checkouts the crate builds as a stub that returns
+  `GpuError::NotBuilt`.
 - **`strata-prob`** — knowledge compilation for режим B: provenance circuits
   (decomposable-AND / deterministic-OR), exact weighted model counting,
   reverse-mode gradients, top-k proofs, and a compilation cache — demonstrated
