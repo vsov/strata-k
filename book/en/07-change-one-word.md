@@ -1,6 +1,6 @@
 # Chapter 7 — Change One Word
 
-*Phase-0 status: everything in this chapter runs today — `Trop` natively, `?prob` by the exact reference method. The scaled probabilistic machinery is described where it differs; chapter 11 places it on the roadmap.*
+*Phase-0 status: everything in this chapter runs today — `Trop` natively, `?prob` by the exact reference method, and `?grad` alongside it: the pedigree run backward, the gradient of a query's probability with respect to every soft fact. The scaled probabilistic machinery is described where it differs; chapter 11 places it on the road.*
 
 The trading house doesn't only ask yes-or-no questions. The logistics desk doesn't ask *whether* goods can move from Rotterdam to Tallinn — of course they can — it asks what the cheapest way is. The risk desk doesn't ask *whether* trouble at Apex can reach Dunlin — chapter 6 answered that — it asks how *likely* it is. Same relations, same recursive structure, different arithmetic.
 
