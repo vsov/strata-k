@@ -6,3 +6,4 @@ Cargo.lock.orig
 
 # Claude Code worktrees / agent scratch (never tracked, never published).
 /.claude/
+/graphify-out/

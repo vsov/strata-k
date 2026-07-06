@@ -21,8 +21,10 @@ phases (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 > (`Prov`/`Prov_k` — every derived fact carries its pedigree, compiled to a
 > circuit for exact or declared-lower-bound marginals); and an **answer-set**
 > (stable model) solver for `@asp` modules. Cross-checked against
-> [Soufflé](https://souffle-lang.github.io/) and fuzzed (10k random programs,
-> naive vs semi-naive and vs Soufflé). **The whole shipped grammar executes**;
+> [Soufflé](https://souffle-lang.github.io/) (200 random programs per CI run;
+> a 10k sweep is one env var away, see Correctness below) and fuzzed
+> naive-vs-semi-naive over 10k random programs. **The whole shipped grammar
+> executes**;
 > the GPU backend runs beside this stack, validated bit-for-bit against it on
 > CUDA hardware (`--features cuda`; hosted CI runs the CPU stub — see
 > [Beyond the CPU pipeline](ARCHITECTURE.md#beyond-the-cpu-pipeline)).
