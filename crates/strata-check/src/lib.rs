@@ -179,19 +179,9 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
             }
             ItemKind::Fact(f) => check_atom(&f.atom, item.span, &mut diags),
             ItemKind::Query(q) => check_atom(&q.atom, item.span, &mut diags),
-            // A TSV row is a certain fact; loading one onto a neural
-            // predicate would be the E1010 category error via a side door.
-            ItemKind::Input(inp) if neural_preds.contains(&inp.pred) => {
-                diags.error(
-                    codes::NEURAL_FACT_NOT_SOFT,
-                    format!(
-                        "`input {} from ...` loads certain facts, but `{}` is a \
-                         neural predicate whose facts are the model's soft outputs",
-                        inp.pred, inp.pred
-                    ),
-                    item.span,
-                );
-            }
+            // `input` onto a neural predicate is legal — the loader demands a
+            // trailing probability column, so the rows arrive soft (the
+            // certain-row case fails at load time, not silently).
             _ => {}
         }
     }

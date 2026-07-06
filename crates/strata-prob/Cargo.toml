@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Strata/K provenance circuits (режим B): exact WMC, reverse-mode gradients, Shannon compilation, top-k proofs, MNIST-sum"
+readme = "README.md"
 repository.workspace = true
 
 # Phase 4: provenance + soft pipeline (режим B). Provenance capture → a

@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Strata/K static analysis: stratification, annotation lattice, safety, fact contracts; High-IR → Core-IR normalization"
 
 # Sibling of strata-front; depends only on strata-ir (D14). Emits the shared
 # Diagnostic from strata-ir::diag (IR-9), NOT from strata-front.

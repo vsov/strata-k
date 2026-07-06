@@ -47,12 +47,15 @@ strata-terms   structural-term machinery — interning, depth bounds, subsumptio
                magic sets, Andersen points-to (pure CPU)
 strata-prob    provenance circuits for режим B — SDD-class circuit, exact WMC,
                gradients, top-k, MNIST-sum (pure CPU)
+strata-k       the library facade — compile/eval/queries/provenance/ASP behind
+               one dependency, plus the Model trait (in-process neural boundary)
 strata-cli     the `strata` binary — ties the crates into the end-to-end path
 ```
 
 Dependency edges point only *down*: `strata-front` and `strata-check` are
 siblings that each depend only on `strata-ir`; `strata-eval` and `strata-asp`
-depend on `strata-ir`; `strata-cli` depends on all of them. `strata-gpu`,
+depend on `strata-ir`; `strata-k` (the embeddable facade) and `strata-cli`
+each depend on all of them. `strata-gpu`,
 `strata-terms`, and `strata-prob` are self-contained engine crates validated
 against the reference stack. Shared data types (the symbol dictionary,
 `GroundVal`/`GroundFact`, the `TermTable`, the `Diagnostics` collector) live in

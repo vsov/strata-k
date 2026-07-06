@@ -1,0 +1,24 @@
+[package]
+name = "strata-k"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Strata/K — stratified, semiring-parameterized Datalog: the library facade (parse → check → run, probabilistic queries, provenance, ASP, in-process neural models)"
+readme = "README.md"
+
+# The library facade: one crate to embed instead of five. Wraps the reference
+# stack (parse → check → eval / prob / provenance / asp) behind a small, typed
+# API, and carries the `Model` trait — the in-process neural boundary.
+[dependencies]
+strata-ir.workspace = true
+strata-front.workspace = true
+strata-check.workspace = true
+strata-eval.workspace = true
+strata-asp.workspace = true
+strata-prob.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

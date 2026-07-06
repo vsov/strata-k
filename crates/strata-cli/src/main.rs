@@ -17,16 +17,15 @@ use strata_ir::terms::TermTable;
 use strata_ir::value::GroundFact;
 
 mod asp;
-mod input;
 mod prob;
 mod prov;
 mod render;
 
 use asp::{is_asp, run_asp};
-use input::load_inputs;
 use prob::{grad_mode, prob_mode, run_grad, run_prob};
 use prov::{prov_modes, run_prov_display};
 use render::render_db;
+use strata_k::load_inputs;
 
 /// Process exit codes. Defined once, reused by every subcommand. [CLI-1]
 #[derive(Debug, Clone, Copy)]
@@ -205,14 +204,13 @@ fn cmd_run(args: &[String]) -> Code {
     // Load `input pred from "file.tsv"` EDB (CLI-5); paths resolve relative to
     // the source file. Interns into the SAME dictionary check produced.
     let base = Path::new(&path).parent().unwrap_or_else(|| Path::new("."));
-    let mut facts = checked.edb.clone();
-    match load_inputs(&prog, &checked.core, &mut checked.dict, base) {
-        Ok(loaded) => facts.extend(loaded),
-        Err(e) => {
-            eprintln!("strata: {e}");
-            return Code::Usage;
-        }
+    // The facade loader pushes certain rows into checked.edb and neural rows
+    // (trailing probability) into checked.prob_edb — the path library users get.
+    if let Err(e) = load_inputs(&prog, &mut checked, base) {
+        eprintln!("strata: {e}");
+        return Code::Usage;
     }
+    let facts = checked.edb.clone();
 
     // режим B: a `?grad` query differentiates the marginal; a `?prob` query (or
     // any probabilistic fact) asks for the marginal itself (Phase 4). Prov/Prov_k
@@ -750,6 +748,98 @@ b() :- not a().
         assert_eq!(out, "Answer 1: {a}\nAnswer 2: {b}\n", "{out}");
     }
 
+    fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("strata_inputs_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    fn run_with_inputs(src: &str, dir: &std::path::Path) -> String {
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "{}", diags.render_text(src));
+        let mut checked = check_program(&prog).expect("check");
+        load_inputs(&prog, &mut checked, dir).expect("inputs load");
+        let facts = checked.edb.clone();
+        if grad_mode(&checked) {
+            run_grad(&checked, &facts).expect("grad")
+        } else if prob_mode(&checked) {
+            run_prob(&checked, &facts).expect("prob")
+        } else {
+            run_program(
+                &checked.core,
+                &checked.dict,
+                &facts,
+                false,
+                &mut checked.terms,
+            )
+            .expect("eval")
+        }
+    }
+
+    #[test]
+    fn csv_edb_loading_with_quotes() {
+        let p = write_temp("edges.csv", "a,b\n\"c,c\",d\n\"say \"\"hi\"\"\",e\n");
+        let dir = p.parent().unwrap().to_path_buf();
+        let out = run_with_inputs(
+            "pred edge(node, node): Bool.\n\
+             pred ok(node): Bool.\n\
+             ok(X) :- edge(X, _Y).\n\
+             input edge from \"edges.csv\".\n",
+            &dir,
+        );
+        assert!(out.contains("edge(a, b)"), "{out}");
+        assert!(out.contains("edge(c,c, d)"), "quoted comma survives: {out}");
+        assert!(out.contains("edge(say \"hi\", e)"), "escaped quotes: {out}");
+    }
+
+    #[test]
+    fn json_edb_loading_including_trop_weights() {
+        let p = write_temp("wedges.json", "[[\"a\", \"b\", 2], [\"b\", \"c\", 3]]");
+        let dir = p.parent().unwrap().to_path_buf();
+        let out = run_with_inputs(
+            "pred edge(node, node): Trop.\n\
+             pred reach(node, node): Trop.\n\
+             reach(X, Y) :- edge(X, Y).\n\
+             reach(X, Z) :- edge(X, Y), reach(Y, Z).\n\
+             input edge from \"wedges.json\".\n",
+            &dir,
+        );
+        assert!(out.contains("reach(a, c) = 5"), "{out}");
+    }
+
+    #[test]
+    fn soft_input_feeds_a_neural_predicate() {
+        // The model's outputs materialized to a file: rows carry a trailing
+        // probability and land in the probabilistic EDB — E1010 stays closed
+        // for certain rows (missing column fails at load).
+        let p = write_temp("flags.tsv", "acme\t0.9\nglobex\t0.2\n");
+        let dir = p.parent().unwrap().to_path_buf();
+        let src = "\
+domain firm.
+neural flag(firm) from model \"aml_gnn\".
+pred investigate(firm): Bool.
+investigate(X) :- flag(X).
+input flag from \"flags.tsv\".
+?prob investigate(acme).
+";
+        let out = run_with_inputs(src, &dir);
+        // World summation carries float noise (0.72 + 0.18): compare numerically.
+        let p: f64 = out.split_whitespace().next().unwrap().parse().unwrap();
+        assert!((p - 0.9).abs() < 1e-12, "{out}");
+        assert!(out.contains(":: investigate(acme)"), "{out}");
+
+        // A certain row (no probability column) is a load error, not silence.
+        let bad = write_temp("flags_bad.tsv", "acme\n");
+        let dir = bad.parent().unwrap().to_path_buf();
+        let (prog, _) = parse(&src.replace("flags.tsv", "flags_bad.tsv"));
+        let mut checked = check_program(&prog).expect("check");
+        let err =
+            load_inputs(&prog, &mut checked, &dir).expect_err("certain row on neural must fail");
+        assert!(err.contains("column"), "{err}");
+    }
+
     #[test]
     fn tsv_edb_loading() {
         // Write an edges.tsv next to a program that reads it via `input`.
@@ -768,9 +858,8 @@ path(X, Z) :- edge(X, Y), path(Y, Z).
         let (prog, diags) = parse(src);
         assert!(!diags.has_errors(), "{}", diags.render_text(src));
         let mut checked = check_program(&prog).expect("check");
-        let loaded = load_inputs(&prog, &checked.core, &mut checked.dict, &dir).expect("load");
-        let mut facts = checked.edb.clone();
-        facts.extend(loaded);
+        load_inputs(&prog, &mut checked, &dir).expect("load");
+        let facts = checked.edb.clone();
         let out = run_program(
             &checked.core,
             &checked.dict,

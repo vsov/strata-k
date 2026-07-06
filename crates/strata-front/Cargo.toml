@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Strata/K frontend: lexer, recursive-descent parser (surface → High-IR), canonical printer and formatter"
 
 # Depends only on strata-ir (D14).
 [dependencies]

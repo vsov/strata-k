@@ -223,6 +223,7 @@ dependencies = [
  "strata-eval",
  "strata-front",
  "strata-ir",
+ "strata-k",
  "strata-prob",
 ]
 
@@ -256,6 +257,19 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "strata-k"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "strata-asp",
+ "strata-check",
+ "strata-eval",
+ "strata-front",
+ "strata-ir",
+ "strata-prob",
 ]
 
 [[package]]

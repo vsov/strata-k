@@ -367,22 +367,6 @@ pred e(node, node): Trop.
 }
 
 #[test]
-fn input_onto_a_neural_predicate_is_e1010() {
-    // A TSV row is a certain fact — the E1010 category error via a side door.
-    let src = "\
-domain firm.
-neural flag(firm) from model \"m\".
-input flag from \"flags.tsv\".
-0.9 :: flag(acme).
-";
-    let codes_got = check(src).unwrap_err();
-    assert!(
-        codes_got.contains(&codes::NEURAL_FACT_NOT_SOFT.0),
-        "got {codes_got:?}"
-    );
-}
-
-#[test]
 fn asp_requires_declarations_too() {
     use strata_check::check_asp_declarations;
     // Undeclared predicate inside @asp: the signature promise is global.

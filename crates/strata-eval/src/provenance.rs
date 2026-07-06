@@ -72,6 +72,10 @@ pub enum ProvError {
     /// A tuple's minimal proof antichain exceeded the capture budget; exact
     /// provenance refuses the blow-up (`Prov_k` is the declared alternative).
     ProofBudget { pred: String, bound: usize },
+    /// The program uses `@terms` compound values — capture evaluates against a
+    /// throwaway term table, so it refuses rather than mis-unify (same posture
+    /// as the enumeration path).
+    TermsUnsupported,
     /// The underlying Bool machinery failed (unknown predicate, safety, ...).
     Eval(EvalError),
 }
@@ -99,6 +103,10 @@ impl std::fmt::Display for ProvError {
                 "`{pred}` accumulated more than {bound} minimal proofs for one tuple; \
                  exact provenance refuses the blow-up — annotate it `Prov_k(k)` for a \
                  declared lower bound"
+            ),
+            ProvError::TermsUnsupported => write!(
+                f,
+                "provenance capture over `@terms` programs is not supported in the reference"
             ),
             ProvError::Eval(e) => write!(f, "{e}"),
         }
@@ -232,6 +240,9 @@ pub fn run_prov_with_budget(
         if !(0.0..=1.0).contains(&p) {
             return Err(ProvError::BadProbability(p));
         }
+    }
+    if crate::prob::uses_terms(core, certain, prob) {
+        return Err(ProvError::TermsUnsupported);
     }
 
     let mut db = ProvDb::default();

@@ -298,9 +298,13 @@ $ strata run
 Facts on a neural predicate **must** be probabilistic — a certain fact on one is
 a category error (`E1010`), because a model's outputs are inherently soft. A
 `?grad` gradient on a neural fact is labelled with the model it backpropagates
-into. Wiring an actual model in-process (so the facts are computed rather than
-supplied) is engineering the reference does not yet include; the interface — soft
-facts in, gradients out — is what the language defines.
+into. The *model itself* is host-side: the CLI takes its outputs as data (inline
+`p :: n(...)` facts or an `input` file with a trailing probability column),
+and the `strata-k` library crate wires it **in-process** — a `Model` object's
+forward pass supplies the soft facts at attach time, and gradients flow back
+to it by position (see [crates/strata-k](../crates/strata-k)). What stays
+open is production scale, not the wiring; the interface — soft facts in,
+gradients out — is what the language defines.
 
 ## Structural terms (`@terms`)
 
@@ -378,17 +382,37 @@ empty model, if stable, is the answer).
 
 ## Loading facts (EDB)
 
-Facts may be written inline, or loaded from a tab-separated file with `input`:
+Facts may be written inline, or loaded from a file with `input` — **TSV, CSV,
+or JSON**, dispatched by extension:
 
 ```
 pred edge(node, node): Bool.
-input edge from "edges.tsv".
+input edge from "edges.tsv".      % tab-separated (Soufflé-compatible)
+input edge from "edges.csv".      % comma-separated; "quoted" fields, "" escapes
+input edge from "edges.json".     % [["a","b"], ["b","c"]] — strings and integers
 ```
 
-The path resolves relative to the source file. The TSV format is
-Soufflé-compatible: one row per fact, one tab-separated column per argument, each
-interned as a symbol constant. A `Trop` predicate has one extra trailing integer
-column for the weight. A row with the wrong number of columns is an error.
+The path resolves relative to the source file; one row per fact, one column per
+argument, symbols interned as constants. The trailing-column convention follows
+the predicate:
+
+- a `Trop` predicate takes one extra trailing **integer weight** column;
+- a **`neural`** predicate takes one extra trailing **probability** column in
+  `[0, 1]` — the model's outputs materialized to a file load as *soft* facts
+  (the probabilistic EDB), never as certain ones: a row without the
+  probability column is a load error, so the E1010 category error has no side
+  door;
+- every other predicate loads plain certain facts.
+
+Value columns are **typed by the declaration**: an `int` column parses as an
+integer in every format (`"5"` in a TSV, `5` in JSON, `5` inline are one
+value — the value space never splits on load path), a domain column interns
+non-empty text as a symbol. A row with the wrong number of columns, an empty
+cell, a float or bare number where a symbol is declared, a non-integer in an
+`int` column, or an unsupported extension is an error naming the file and
+line. For soft facts computed *in-process* rather than materialized, use the
+`strata-k` library crate's `Model` trait
+([crates/strata-k](../crates/strata-k)).
 
 ## Diagnostics
 
@@ -412,7 +436,7 @@ machine-applicable fix. The front-end owns the `E0xxx` range, the checker the
 | `E1007` | rule mixes incompatible semirings |
 | `E1008` | forbidden cell of the semiring×recursion table (2.4) |
 | `E1009` | fact `::` mismatch: `int ::` off `Trop`, probability on `Trop` or outside [0, 1], bare `Trop` fact |
-| `E1010` | certain fact on a `neural` predicate — inline or via `input` (model outputs must be soft) |
+| `E1010` | certain fact on a `neural` predicate (model outputs must be soft; a certain `input` row fails at load time with file:line) |
 | `E1011` | construct with no meaning under `@asp`: `::` annotations, compound facts, queries, `input`, `neural` |
 | `E1012` | predicate redeclared with a conflicting signature |
 

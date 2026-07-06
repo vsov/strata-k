@@ -46,6 +46,17 @@ logged in the job output) and sets `STRATA_REQUIRE_ORACLES=1`, which turns a
 missing oracle into a hard failure: a green badge means the external
 differentials actually ran.
 
+## Versioning
+
+The workspace shares one version (`workspace.package.version`, currently 0.1.x)
+and every crate carries full metadata. Pre-1.0 semantics: breaking API changes
+bump the minor version and are called out in the commit; the library surface to
+treat as public is `strata-k` (the facade) plus the diagnostic codes and the
+High-IR JSON schema — everything else is implementation. Publishing to
+crates.io is deliberate and has not happened; `cargo install --path
+crates/strata-cli` and a git dependency on `strata-k` are the supported
+channels.
+
 ## The bar for a change (what CI enforces)
 
 CI runs the same four gates; run them locally before pushing:

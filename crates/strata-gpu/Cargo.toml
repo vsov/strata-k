@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Strata/K GPU execution engine (cuda-feature-gated): device-resident fixpoints, worst-case-optimal joins, query planner, ASP grounding"
+readme = "README.md"
 repository.workspace = true
 
 # GPU engine (spec Phase 1, режим A). CUDA kernels launched from Rust via cudarc.

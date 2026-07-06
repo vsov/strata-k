@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Strata/K answer-set stack: reference stable-model solver, choice/cardinality normalization, aspif, clasp embedding, unfounded-set checks"
 
 # Reference ASP solver: grounding reuses the same Herbrand universe as the engine;
 # depends only on strata-ir for the High-IR rule shapes and ground values (D14).

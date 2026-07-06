@@ -34,6 +34,21 @@ cargo build
 cargo run -p strata-cli -- run examples/tc.strata
 ```
 
+Install the `strata` binary onto your PATH, or embed the engine as a library:
+
+```sh
+cargo install --path crates/strata-cli    # the `strata` binary
+```
+
+```toml
+# Cargo.toml — the library facade (parse → check → run, queries, provenance,
+# ASP, in-process neural models); see crates/strata-k/README.md
+strata-k = { git = "https://github.com/vsov/strata-k" }
+```
+
+(The crates are not on crates.io yet; the git dependency and `cargo install
+--path` are the supported channels.)
+
 `examples/tc.strata` computes a transitive closure:
 
 ```
@@ -135,7 +150,7 @@ convention is in [`docs/ir-encoding.md`](docs/ir-encoding.md).
 
 ## Architecture
 
-A Cargo workspace of nine crates, layered so the base has no sibling
+A Cargo workspace of ten crates, layered so the base has no sibling
 dependencies:
 
 ```
@@ -152,6 +167,7 @@ strata-gpu     the GPU execution engine (cuda-feature-gated; CPU stub without) �
                device-resident fixpoints, WCOJ, query planner, ASP grounding
 strata-terms   structural-term machinery — interning, magic sets, points-to
 strata-prob    provenance circuits — SDD-class WMC, gradients, top-k, MNIST-sum
+strata-k       the library facade — embed the engine; Model trait (in-process neural)
 strata-cli     the `strata` binary
 ```
 

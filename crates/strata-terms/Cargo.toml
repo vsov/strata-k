@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Strata/K structural-term machinery: hash-cons interning, depth bounds, subsumption, magic sets, Andersen points-to"
+readme = "README.md"
 repository.workspace = true
 
 # Phase 3: structural terms and the classic term-program machinery — host

@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Strata/K reference interpreter: naive/semi-naive fixpoints, exact probabilistic marginals and gradients, provenance capture, DRed"
 
 # The reference interpreter — eternal differential oracle (I5). Consumes Core-IR
 # from strata-ir (IR-6); does NOT depend on strata-check (eval walks hand-written

@@ -32,6 +32,11 @@ pub const MAX_PROB_FACTS: usize = 20;
 pub enum ProbError {
     /// More probabilistic facts than exact enumeration allows (spec: #P-hard).
     TooManyProbFacts(usize),
+    /// The program uses `@terms` compound values. Enumerating worlds would
+    /// intern constructed terms into per-world throwaway tables, so equal terms
+    /// in different worlds would not compare equal — the marginals would be
+    /// silently wrong. Refused instead.
+    TermsUnsupported,
     /// A probability outside [0, 1].
     BadProbability(f64),
     /// The deductive part must be Bool (probabilities annotate Bool relations).
@@ -49,6 +54,11 @@ impl std::fmt::Display for ProbError {
                  (exact режим B is #P-hard; use knowledge compilation / top-k)"
             ),
             ProbError::BadProbability(p) => write!(f, "probability {p} is outside [0, 1]"),
+            ProbError::TermsUnsupported => write!(
+                f,
+                "режим B over `@terms` programs is not supported in the reference \
+                 (per-world term interning would mis-compare constructed terms)"
+            ),
             ProbError::NotBool(p) => write!(f, "predicate `{p}` is not Bool; режим B is Bool-only"),
             ProbError::Eval(e) => write!(f, "{e}"),
         }
@@ -81,6 +91,9 @@ pub fn marginals(
         if !(0.0..=1.0).contains(&p) {
             return Err(ProbError::BadProbability(p));
         }
+    }
+    if uses_terms(core, certain, prob) {
+        return Err(ProbError::TermsUnsupported);
     }
 
     let mut acc: Marginals = HashMap::new();
@@ -173,6 +186,9 @@ pub fn grad_query(
             return Err(ProbError::BadProbability(p));
         }
     }
+    if uses_terms(core, certain, prob) {
+        return Err(ProbError::TermsUnsupported);
+    }
 
     let mut pacc: HashMap<Tuple, f64> = HashMap::new();
     let mut gacc: HashMap<Tuple, Vec<f64>> = HashMap::new();
@@ -241,6 +257,35 @@ pub fn grad_query(
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+/// Does the program touch `@terms` at all — compound terms in rules, or
+/// compound values in the (certain or probabilistic) EDB?
+pub(crate) fn uses_terms(
+    core: &CoreProgram,
+    certain: &[(String, Tuple)],
+    prob: &[(String, Tuple, f64)],
+) -> bool {
+    use strata_ir::core::{CoreLiteral, CoreTerm};
+    fn term_has_compound(t: &CoreTerm) -> bool {
+        // A nested compound is only reachable through an outer one, so the
+        // top-level check suffices.
+        matches!(t, CoreTerm::Compound { .. })
+    }
+    let rule_terms = core.rules.iter().any(|r| {
+        r.head.args.iter().any(term_has_compound)
+            || r.body.iter().any(|l| {
+                let (CoreLiteral::Pos(a) | CoreLiteral::Neg(a)) = l;
+                a.args.iter().any(term_has_compound)
+            })
+    });
+    rule_terms
+        || certain
+            .iter()
+            .any(|(_, t)| t.iter().any(|v| matches!(v, GroundVal::Term(_))))
+        || prob
+            .iter()
+            .any(|(_, t, _)| t.iter().any(|v| matches!(v, GroundVal::Term(_))))
 }
 
 fn matches(tuple: &[GroundVal], pattern: &[Option<GroundVal>]) -> bool {

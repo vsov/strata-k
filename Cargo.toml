@@ -9,6 +9,7 @@ members = [
     "crates/strata-gpu",
     "crates/strata-terms",
     "crates/strata-prob",
+    "crates/strata-k",
     "crates/strata-cli",
 ]
 
@@ -29,6 +30,7 @@ strata-check = { path = "crates/strata-check" }
 strata-eval = { path = "crates/strata-eval" }
 strata-asp = { path = "crates/strata-asp" }
 strata-prob = { path = "crates/strata-prob" }
+strata-k = { path = "crates/strata-k" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"
