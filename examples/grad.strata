@@ -1,0 +1,13 @@
+% Gradient query (?grad): the marginal probability of a derived tuple AND its
+% gradient w.r.t. every probabilistic fact — reverse-mode over the possible-world
+% chain. The numbers a training loop backpropagates.
+pred edge(node, node): Bool.
+pred path(node, node): Bool.
+path(X, Y) :- edge(X, Y).
+path(X, Z) :- edge(X, Y), path(Y, Z).
+
+0.5 :: edge(a, c).
+0.5 :: edge(a, b).
+0.5 :: edge(b, c).
+
+?grad path(a, c).

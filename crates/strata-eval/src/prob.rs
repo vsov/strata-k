@@ -139,6 +139,110 @@ pub fn query(
     Ok(out)
 }
 
+/// Answer a `?grad pred(pattern)` query (spec §2.3 reverse-mode differentiability):
+/// for each matching derived tuple, its marginal probability *and* the gradient
+/// of that marginal w.r.t. every probabilistic fact's probability,
+/// `grad[i] = ∂P(tuple)/∂p_i`.
+///
+/// Same exact possible-world enumeration as [`marginals`], differentiating the
+/// world weight `w(W) = ∏_{present} p · ∏_{absent} (1-p)`:
+/// `∂w/∂p_i = (∏_{j≠i} factor_j) · (+1 if i present else −1)`. The sibling
+/// product `∏_{j≠i}` is taken via prefix/suffix products, so it stays exact even
+/// at `p_i ∈ {0, 1}` (where dividing `w` by `factor_i` would be `0/0`). Results
+/// are sorted by tuple.
+pub fn grad_query(
+    core: &CoreProgram,
+    certain: &[(String, Tuple)],
+    prob: &[(String, Tuple, f64)],
+    pred: &str,
+    pattern: &[Option<GroundVal>],
+) -> Result<Vec<(Tuple, f64, Vec<f64>)>, ProbError> {
+    if let Some(p) = core
+        .predicates
+        .iter()
+        .find(|p| p.semiring != Semiring::Bool)
+    {
+        return Err(ProbError::NotBool(p.name.clone()));
+    }
+    let n = prob.len();
+    if n > MAX_PROB_FACTS {
+        return Err(ProbError::TooManyProbFacts(n));
+    }
+    for &(_, _, p) in prob {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(ProbError::BadProbability(p));
+        }
+    }
+
+    let mut pacc: HashMap<Tuple, f64> = HashMap::new();
+    let mut gacc: HashMap<Tuple, Vec<f64>> = HashMap::new();
+
+    for mask in 0u32..(1u32 << n) {
+        // per-fact factor and the world weight w = ∏ factor.
+        let mut factor = vec![0.0f64; n];
+        let mut w = 1.0f64;
+        for (i, &(_, _, p)) in prob.iter().enumerate() {
+            let present = mask & (1 << i) != 0;
+            factor[i] = if present { p } else { 1.0 - p };
+            w *= factor[i];
+        }
+        // sibling products ∏_{j≠i} factor_j via prefix/suffix (exact at 0/1).
+        let mut prefix = vec![1.0f64; n + 1];
+        for i in 0..n {
+            prefix[i + 1] = prefix[i] * factor[i];
+        }
+        let mut suffix = vec![1.0f64; n + 1];
+        for i in (0..n).rev() {
+            suffix[i] = suffix[i + 1] * factor[i];
+        }
+        let mut dw = vec![0.0f64; n];
+        for (i, dwi) in dw.iter_mut().enumerate() {
+            let sibling = prefix[i] * suffix[i + 1];
+            *dwi = if mask & (1 << i) != 0 {
+                sibling
+            } else {
+                -sibling
+            };
+        }
+        // A world with zero weight can still move the gradient (via dw), so skip
+        // only when it contributes nothing at all.
+        if w == 0.0 && dw.iter().all(|&x| x == 0.0) {
+            continue;
+        }
+
+        let mut edb: Vec<(&str, Tuple, Ann)> = certain
+            .iter()
+            .map(|(pr, t)| (pr.as_str(), t.clone(), Ann::Unit))
+            .collect();
+        for (i, (pr, t, _)) in prob.iter().enumerate() {
+            if mask & (1 << i) != 0 {
+                edb.push((pr.as_str(), t.clone(), Ann::Unit));
+            }
+        }
+        let db = run(core, &edb).map_err(ProbError::Eval)?;
+        if let Some(rel) = db.relation(pred) {
+            for tuple in rel.rows.keys() {
+                *pacc.entry(tuple.clone()).or_insert(0.0) += w;
+                let g = gacc.entry(tuple.clone()).or_insert_with(|| vec![0.0; n]);
+                for (gi, &dwi) in g.iter_mut().zip(&dw) {
+                    *gi += dwi;
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<(Tuple, f64, Vec<f64>)> = pacc
+        .into_iter()
+        .filter(|(t, _)| matches(t, pattern))
+        .map(|(t, p)| {
+            let g = gacc.get(&t).cloned().unwrap_or_else(|| vec![0.0; n]);
+            (t, p, g)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
 fn matches(tuple: &[GroundVal], pattern: &[Option<GroundVal>]) -> bool {
     tuple.len() == pattern.len()
         && tuple
@@ -226,6 +330,47 @@ mod tests {
         let core = tc_program();
         let prob = vec![edge(0, 2, 0.5), edge(0, 1, 0.5), edge(1, 2, 0.5)];
         assert!((prob_of(&core, &prob, &[0, 2]) - 0.625).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gradient_matches_finite_differences() {
+        // Two routes a→c (direct + via b): P(path(a,c)) and its gradient w.r.t.
+        // each edge probability, checked against central finite differences.
+        let core = tc_program();
+        let prob = vec![edge(0, 2, 0.5), edge(0, 1, 0.6), edge(1, 2, 0.7)];
+        let pat = [Some(sym(0)), Some(sym(2))];
+        let res = grad_query(&core, &[], &prob, "path", &pat).unwrap();
+        let (_, p, g) = &res[0];
+        // sanity: probability matches the marginal query.
+        assert!((p - prob_of(&core, &prob, &[0, 2])).abs() < 1e-12);
+        // finite-difference each fact's probability.
+        let eps = 1e-6;
+        for i in 0..prob.len() {
+            let mut pp = prob.clone();
+            pp[i].2 += eps;
+            let mut pm = prob.clone();
+            pm[i].2 -= eps;
+            let fd = (prob_of(&core, &pp, &[0, 2]) - prob_of(&core, &pm, &[0, 2])) / (2.0 * eps);
+            assert!(
+                (g[i] - fd).abs() < 1e-4,
+                "grad[{i}]={} vs finite-diff {fd}",
+                g[i]
+            );
+        }
+    }
+
+    #[test]
+    fn gradient_exact_at_boundary_probabilities() {
+        // p_i ∈ {0,1}: the sibling-product form must still be finite/exact.
+        let core = tc_program();
+        let prob = vec![edge(0, 1, 1.0), edge(1, 2, 0.4)];
+        let res = grad_query(&core, &[], &prob, "path", &[Some(sym(0)), Some(sym(2))]).unwrap();
+        let (_, p, g) = &res[0];
+        // P(path(a,c)) = P(edge(a,b))·P(edge(b,c)) = 1·0.4 = 0.4.
+        assert!((p - 0.4).abs() < 1e-12);
+        // ∂P/∂p(edge a,b) = p(edge b,c) = 0.4 ; ∂P/∂p(edge b,c) = p(edge a,b) = 1.
+        assert!((g[0] - 0.4).abs() < 1e-9, "g0={}", g[0]);
+        assert!((g[1] - 1.0).abs() < 1e-9, "g1={}", g[1]);
     }
 
     #[test]

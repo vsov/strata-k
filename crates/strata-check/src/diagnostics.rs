@@ -29,6 +29,10 @@ pub mod codes {
     /// exact probabilistic provenance through recursion. Carries the nearest
     /// allowed alternative in its message (D9/I4).
     pub const TABLE_2_4_FORBIDDEN: DiagCode = DiagCode(1008);
+    /// A fact on a `neural` predicate is not probabilistic: a neural predicate's
+    /// ground atoms are a model's soft outputs, so they must carry a probability
+    /// (`p :: n(...)`), never be asserted as certain.
+    pub const NEURAL_FACT_NOT_SOFT: DiagCode = DiagCode(1010);
 
     pub const ALL: &[(DiagCode, &str)] = &[
         (UNDECLARED_PRED, "check.undeclared-predicate"),
@@ -39,6 +43,7 @@ pub mod codes {
         (NOT_EXECUTABLE, "check.not-executable-annotation"),
         (SEMIRING_CONFLICT, "check.semiring-conflict"),
         (TABLE_2_4_FORBIDDEN, "check.table-2.4-forbidden"),
+        (NEURAL_FACT_NOT_SOFT, "check.neural-fact-not-soft"),
     ];
 }
 

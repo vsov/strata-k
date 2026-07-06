@@ -19,12 +19,12 @@ pred_decl    = "pred" , const_ident , "(" , [ arg_type { "," , arg_type } ] , ")
                ":" , annotation , { effect } , "." ;
 arg_type     = const_ident        (* a declared domain *)
              | "int"              (* i64 column / Trop weight source *)
-             | "term" , const_ident ;  (* @terms — parsed, not executed (D5) *)
+             | "term" , const_ident ;  (* @terms structural-term column *)
 annotation   = "Bool" | "Trop" | "Prov" | "Prov_k" ;   (* Prov/Prov_k: not-impl in Phase 0 *)
 effect       = "total" | "partial" | "complete" | "sound_only"
              | "deterministic" | "stochastic" ;
 
-(* neural predicate — parsed, never executed in Phase 0 (D5) *)
+(* neural predicate — its facts are the model's soft outputs (p :: n(...)) *)
 neural_decl  = "neural" , const_ident , "(" , [ const_ident { "," , const_ident } ] , ")" ,
                "from" , "model" , string , "." ;
 
@@ -33,19 +33,20 @@ rule         = atom , ":-" , body , "." ;
 body         = literal , { "," , literal } ;
 literal      = [ "not" ] , atom ;
 atom         = const_ident , "(" , [ term { "," , term } ] , ")" ;
-term         = var_ident | const_ident | integer | aggregate ;
+term         = var_ident | const_ident | integer | aggregate | compound ;
+compound     = const_ident , "(" , [ term { "," , term } ] , ")" ;  (* @terms constructor *)
 aggregate    = agg_op , "<" , var_ident , ">" ;     (* head-only, e.g. count<Y> *)
 agg_op       = "min" | "max" | "sum" | "count" | "prob_or" ;
 
 fact         = [ annotated ] , atom , "." ;
-annotated    = number , "::" ;   (* integer :: -> Trop weight; float :: -> prob (not-impl, D5) *)
+annotated    = number , "::" ;   (* integer :: -> Trop weight; float :: -> probabilistic fact *)
 
 input_decl   = "input" , const_ident , "from" , string , "." ;
 
-(* --- queries — Phase-0 executes only the plain form --- *)
+(* --- queries: plain, marginal (режим B), and gradient --- *)
 query        = ( "?" | "?prob" | "?grad" ) , atom , "." ;
 
-(* --- module pragmas — parsed, not executed (D5) --- *)
+(* --- module pragmas: @terms structural terms, @asp stable models --- *)
 pragma       = ( "@terms" | "@asp" ) , "." ;
 
 (* --- lexical --- *)

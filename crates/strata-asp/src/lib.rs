@@ -359,6 +359,7 @@ fn ground_atom(a: &Atom, asg: &HashMap<String, Val>) -> Result<GroundAtom, AspEr
             Term::Const { name } => Val::Sym(name.clone()),
             Term::Int { value } => Val::Int(*value),
             Term::Agg { .. } => return Err(AspError::Unsupported("aggregate atom")),
+            Term::Compound { .. } => return Err(AspError::Unsupported("compound term")),
         });
     }
     Ok((a.pred.clone(), args))

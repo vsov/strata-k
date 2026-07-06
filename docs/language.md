@@ -185,7 +185,92 @@ are the "fast" methods a later phase must match against it. Exact enumeration is
 refused past 20 probabilistic facts (it is #P-hard). The deductive part must be
 `Bool`.
 
-`?grad` (gradient) queries parse but are **not implemented in Phase 0**.
+### Gradient queries (`?grad`)
+
+A `?grad` query returns the marginal probability of each matching tuple **and**
+the gradient of that marginal with respect to every probabilistic fact —
+reverse-mode differentiation over the same possible-world chain:
+
+```
+?grad path(a, c).
+```
+
+```
+$ strata run examples/grad.strata
+0.625 :: path(a, c)
+  ∂/∂[0.5 :: edge(a, c)] = 0.75
+  ∂/∂[0.5 :: edge(a, b)] = 0.25
+  ∂/∂[0.5 :: edge(b, c)] = 0.25
+```
+
+Each `∂/∂[...]` line is `∂P(tuple)/∂p_i` for that soft fact — exact (checked
+against finite differences), including at boundary probabilities `0` and `1`.
+This is the number a host training loop backpropagates into whatever produced
+the probability.
+
+## Neural predicates
+
+A `neural` predicate declares that its ground atoms are the **soft outputs of a
+model** — each fact carries the model's confidence, exactly like a probabilistic
+fact, and flows into rules as ordinary soft evidence:
+
+```
+domain firm.
+domain label.
+neural flag(firm, label) from model "aml_gnn".
+
+pred investigate(firm): Bool.
+investigate(F) :- flag(F, structuring).
+
+0.9 :: flag(acme, structuring).
+?grad investigate(acme).
+```
+
+```
+$ strata run
+0.9 :: investigate(acme)
+  ∂/∂[0.9 :: flag(acme, structuring)] = 1  (→ model "aml_gnn")
+```
+
+Facts on a neural predicate **must** be probabilistic — a certain fact on one is
+a category error (`E1010`), because a model's outputs are inherently soft. A
+`?grad` gradient on a neural fact is labelled with the model it backpropagates
+into. Wiring an actual model in-process (so the facts are computed rather than
+supplied) is engineering the reference does not yet include; the interface — soft
+facts in, gradients out — is what the language defines.
+
+## Structural terms (`@terms`)
+
+A module that opens with the `@terms` pragma may use **constructor terms** —
+`cons(H, T)`, `node(L, V, R)` — in any term position. This makes the language
+Turing-complete, so termination is no longer guaranteed; the engine fences
+divergence with a **depth bound**:
+
+```
+@terms.
+domain elem.
+pred nat(elem): Bool.
+nat(zero).
+nat(succ(N)) :- nat(N).
+```
+
+```
+$ strata run examples/terms.strata
+nat(zero)
+nat(succ(zero))
+nat(succ(succ(zero)))
+…
+% status: Sound (possibly incomplete) — 1 derivation(s) dropped at depth bound 64
+```
+
+- Ground compound terms are **hash-consed**: equal terms share one canonical id,
+  and the engine compares scalars, never structures.
+- Rule heads *construct* terms; rule bodies *decompose* them by unification —
+  `root(V) :- tree(node(_L, V, _R))` matches a compound fact and binds `V`.
+- A constructed term deeper than the bound is **dropped**, and the run is
+  flagged `Sound (possibly incomplete)`: every printed fact is correct with
+  respect to the unbounded program (terms are only dropped, never invented), but
+  completeness is lost — the spec's `Sound[T]`, not `Complete[T]`.
 
 ## Answer-set programming (`@asp`)
 
@@ -255,6 +340,8 @@ machine-applicable fix. The front-end owns the `E0xxx` range, the checker the
 | `E1006` | annotation not executable in Phase 0 (`Prov`/`Prov_k`) |
 | `E1007` | rule mixes incompatible semirings |
 | `E1008` | forbidden cell of the semiring×recursion table (2.4) |
+| `E1009` | fact annotation mismatch (`float ::` on non-Bool / `int ::` on non-Trop) |
+| `E1010` | certain fact on a `neural` predicate (model outputs must be soft) |
 
 `strata check --error-format=json` emits the same diagnostics as machine-readable
 JSON.
@@ -265,11 +352,8 @@ These constructs **parse into valid IR** and then return a stable
 *"not implemented in Phase 0"* diagnostic — the surface is complete, execution is
 staged:
 
-- `neural` predicates
-- `@terms` (structural terms: lists, trees under constructors)
-- `Prov` / `Prov_k` provenance annotations
-- `?grad` (gradient) queries
+- `Prov` / `Prov_k` provenance annotations (the full pedigree as a compiled
+  circuit; `?prob`/`?grad` marginals and gradients already run)
 
-The GPU execution engine, knowledge-compilation optimization of режим B, and
-incremental (differential) evaluation are later phases — see
-[../ARCHITECTURE.md](../ARCHITECTURE.md).
+The GPU execution engine and incremental (differential) evaluation live beside
+this reference stack — see [../ARCHITECTURE.md](../ARCHITECTURE.md).

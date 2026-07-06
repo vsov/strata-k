@@ -123,6 +123,10 @@ fn term(t: &Term) -> String {
         Term::Const { name } => name.clone(),
         Term::Int { value } => value.to_string(),
         Term::Agg { op, var } => format!("{}<{}>", agg_op(*op), var),
+        Term::Compound { functor, args } => {
+            let inner: Vec<String> = args.iter().map(term).collect();
+            format!("{functor}({})", inner.join(", "))
+        }
     }
 }
 

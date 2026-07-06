@@ -13,12 +13,16 @@ phases (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 > **Status.** The executable core runs end-to-end: `text → parse → check →
 > Core-IR → interpret → result`. Positive Datalog, stratified negation, and
 > aggregates over the **Bool** and **Trop** (tropical, min-plus) semirings;
-> exact **probabilistic** queries (`?prob`, distribution semantics) and an
-> **answer-set** (stable model) solver for `@asp` modules. Cross-checked against
+> exact **probabilistic** queries (`?prob`, distribution semantics) with
+> **gradients** (`?grad`, reverse-mode over the режим-B chain); **neural**
+> predicates (model-sourced soft facts, differentiated back through `?grad`);
+> **structural terms** (`@terms`, constructor terms via hash-consing, with a
+> depth bound and a sound-but-incomplete status); and an **answer-set** (stable
+> model) solver for `@asp` modules. Cross-checked against
 > [Soufflé](https://souffle-lang.github.io/) and fuzzed (10k random programs,
-> naive vs semi-naive and vs Soufflé). Everything beyond this — the GPU backend,
-> `Prov`/`Prov_k` provenance, `neural`, `@terms`, `?grad` — **parses into valid
-> IR** and returns a stable *"not implemented in Phase 0"* diagnostic.
+> naive vs semi-naive and vs Soufflé). Everything beyond this — the GPU backend
+> and `Prov`/`Prov_k` provenance — **parses into valid IR** and returns a stable
+> *"not implemented in Phase 0"* diagnostic.
 
 ## Quick start
 
@@ -128,25 +132,31 @@ convention is in [`docs/ir-encoding.md`](docs/ir-encoding.md).
 
 ## Architecture
 
-A Cargo workspace of six crates, layered so the base has no sibling
+A Cargo workspace of nine crates, layered so the base has no sibling
 dependencies:
 
 ```
 strata-ir      IR data model (High-IR + Core-IR), symbol dictionary, diagnostics,
-               JSON schema, tropical weight — the shared base (no sibling deps)
+               JSON schema, tropical weight, hash-cons term table — the shared base
 strata-front   lexer, parser (surface → High-IR), canonical printer, fmt, E0xxx diagnostics
 strata-check   dependency graph, stratification, type/semiring checks (table 2.4),
                normalization High-IR → Core-IR, E1xxx diagnostics
 strata-eval    the reference interpreter over Core-IR — naive T_P, semi-naive,
-               and exact probabilistic marginals (режим B); the differential oracle
-strata-asp     the reference answer-set solver (grounding + stable models)
+               exact probabilistic marginals + gradients (режим B), DRed; the oracle
+strata-asp     the answer-set stack — reference solver, normalization, aspif,
+               clasp embedding, unfounded-set verification
+strata-gpu     the GPU execution engine (cuda-feature-gated; CPU stub without) —
+               device-resident fixpoints, WCOJ, query planner, ASP grounding
+strata-terms   structural-term machinery — interning, magic sets, points-to
+strata-prob    provenance circuits — SDD-class WMC, gradients, top-k, MNIST-sum
 strata-cli     the `strata` binary
 ```
 
 `strata-front` and `strata-check` are siblings that both depend only on
-`strata-ir`. The GPU backend (later phase) will sit beside `strata-eval`,
-consuming the same Core-IR. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full
-picture and [CONTRIBUTING.md](CONTRIBUTING.md) to build and test.
+`strata-ir`; the engine crates (`strata-gpu`, `strata-terms`, `strata-prob`)
+sit beside `strata-eval` and are validated bit-for-bit against the reference
+stack. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full picture and
+[CONTRIBUTING.md](CONTRIBUTING.md) to build and test.
 
 ## Correctness
 

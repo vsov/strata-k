@@ -8,12 +8,13 @@ use std::path::Path;
 use std::process::ExitCode as ProcExit;
 
 use strata_check::{check_program, Checked};
-use strata_eval::{marginals, prob, run, run_semi_naive, Ann, Db, GroundVal};
+use strata_eval::{marginals, prob, run_semi_naive, run_terms, Ann, Db, GroundVal};
 use strata_front::{format, parse, print_program};
 use strata_ir::core::{CoreProgram, Semiring};
 use strata_ir::dict::SymbolDict;
 use strata_ir::high::program::{ItemKind, Pragma, QueryKind, Term};
 use strata_ir::high::Program;
+use strata_ir::terms::TermTable;
 use strata_ir::trop::Weight;
 use strata_ir::value::GroundFact;
 
@@ -189,16 +190,21 @@ fn cmd_run(args: &[String]) -> Code {
         }
     }
 
-    // режим B: if the program has probabilistic facts or a `?prob` query, answer
-    // by exact possible-world marginals (Phase 4) instead of a plain evaluation.
-    let result = if prob_mode(&checked) {
+    // режим B: a `?grad` query differentiates the marginal; a `?prob` query (or
+    // any probabilistic fact) asks for the marginal itself (Phase 4). Otherwise a
+    // plain evaluation.
+    let result = if grad_mode(&checked) {
+        run_grad(&checked, &facts)
+    } else if prob_mode(&checked) {
         run_prob(&checked, &facts)
     } else {
+        let semi = has_flag(args, "--semi-naive");
         run_program(
             &checked.core,
             &checked.dict,
             &facts,
-            has_flag(args, "--semi-naive"),
+            semi,
+            &mut checked.terms,
         )
     };
     match result {
@@ -260,6 +266,47 @@ fn run_prob(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, S
 fn prob_line(p: f64, pred: &str, tuple: &[GroundVal], dict: &SymbolDict) -> String {
     let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
     format!("{p} :: {pred}({})\n", args.join(", "))
+}
+
+fn grad_mode(checked: &Checked) -> bool {
+    checked.queries.iter().any(|q| q.kind == QueryKind::Grad)
+}
+
+/// Answer `?grad` queries: the marginal probability of each matching tuple and
+/// its gradient w.r.t. every probabilistic fact's probability (reverse-mode over
+/// the режим-B chain, spec §2.3). [gradient wiring]
+fn run_grad(checked: &Checked, certain_facts: &[GroundFact]) -> Result<String, String> {
+    let certain: Vec<(String, Vec<GroundVal>)> = certain_facts
+        .iter()
+        .map(|f| (f.pred.clone(), f.args.clone()))
+        .collect();
+    let prob_edb = &checked.prob_edb;
+    let dict = &checked.dict;
+
+    let mut out = String::new();
+    for q in checked.queries.iter().filter(|q| q.kind == QueryKind::Grad) {
+        let ans = prob::grad_query(&checked.core, &certain, prob_edb, &q.pred, &q.pattern)
+            .map_err(|e| e.to_string())?;
+        for (tuple, p, grad) in ans {
+            out.push_str(&prob_line(p, &q.pred, &tuple, dict));
+            // one gradient line per probabilistic fact, labelled by that fact;
+            // a neural fact also names the model the gradient backpropagates into.
+            for ((pred, ptuple, pw), g) in prob_edb.iter().zip(&grad) {
+                let args: Vec<String> = ptuple.iter().map(|v| render_val(v, dict)).collect();
+                let model = checked
+                    .neural
+                    .iter()
+                    .find(|(n, _)| n == pred)
+                    .map(|(_, m)| format!("  (→ model {m:?})"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "  ∂/∂[{pw} :: {pred}({})] = {g}{model}\n",
+                    args.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 // --- ASP (Phase 5) -----------------------------------------------------------
@@ -397,18 +444,29 @@ fn run_program(
     dict: &SymbolDict,
     facts: &[GroundFact],
     semi_naive: bool,
+    terms: &mut TermTable,
 ) -> Result<String, String> {
     let edb: Vec<(&str, Vec<GroundVal>, Ann)> = facts
         .iter()
         .map(|f| (f.pred.as_str(), f.args.clone(), Ann::from_weight(f.weight)))
         .collect();
+    // `terms` already holds the compound EDB facts (interned by the checker) and
+    // outlives the database so constructed terms can be rendered; the depth bound
+    // guarantees termination for `@terms` programs.
     let db = if semi_naive {
-        run_semi_naive(core, &edb)
+        run_semi_naive(core, &edb).map_err(|e| e.to_string())?
     } else {
-        run(core, &edb)
+        run_terms(core, &edb, terms).map_err(|e| e.to_string())?
+    };
+    let mut out = render_db(&db, dict, terms);
+    if !terms.is_complete() {
+        out.push_str(&format!(
+            "% status: Sound (possibly incomplete) — {} derivation(s) dropped at depth bound {}\n",
+            terms.dropped(),
+            strata_ir::terms::DEFAULT_MAX_DEPTH
+        ));
     }
-    .map_err(|e| e.to_string())?;
-    Ok(render_db(&db, dict))
+    Ok(out)
 }
 
 /// Load every `input pred from "file.tsv"` declaration's EDB (CLI-5, D10).
@@ -477,12 +535,12 @@ fn load_inputs(
 
 /// Canonical output: relations in name order, tuples sorted (BTreeMap), constants
 /// resolved through the dictionary (IR-10). [render half of IR-10]
-fn render_db(db: &Db, dict: &SymbolDict) -> String {
+fn render_db(db: &Db, dict: &SymbolDict, terms: &TermTable) -> String {
     let mut out = String::new();
     for pred in db.predicates() {
         let rel = db.relation(pred).unwrap();
         for (tuple, ann) in &rel.rows {
-            let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+            let args: Vec<String> = tuple.iter().map(|v| render_val_t(v, dict, terms)).collect();
             out.push_str(&format!("{pred}({})", args.join(", ")));
             if let Ann::W(w) = ann {
                 out.push_str(&format!(" = {}", render_weight(*w)));
@@ -493,10 +551,30 @@ fn render_db(db: &Db, dict: &SymbolDict) -> String {
     out
 }
 
+/// Render a ground value; compound terms (`@terms`) are reconstructed structurally
+/// from the term table.
+fn render_val_t(v: &GroundVal, dict: &SymbolDict, terms: &TermTable) -> String {
+    match v {
+        GroundVal::Sym(id) => dict.resolve(*id).unwrap_or("?").to_string(),
+        GroundVal::Int(n) => n.to_string(),
+        GroundVal::Term(id) => {
+            let (functor, args) = terms.get(*id);
+            let inner: Vec<String> = args.iter().map(|a| render_val_t(a, dict, terms)).collect();
+            format!(
+                "{}({})",
+                dict.resolve(functor).unwrap_or("?"),
+                inner.join(", ")
+            )
+        }
+    }
+}
+
+/// Term-free render (probabilistic / gradient paths never produce `@terms`).
 fn render_val(v: &GroundVal, dict: &SymbolDict) -> String {
     match v {
         GroundVal::Sym(id) => dict.resolve(*id).unwrap_or("?").to_string(),
         GroundVal::Int(n) => n.to_string(),
+        GroundVal::Term(id) => format!("<term#{}>", id.0),
     }
 }
 
@@ -514,8 +592,9 @@ mod tests {
     fn eval_src(src: &str, semi: bool) -> String {
         let (prog, diags) = parse(src);
         assert!(!diags.has_errors(), "{}", diags.render_text(src));
-        let checked = check_program(&prog).expect("check");
-        run_program(&checked.core, &checked.dict, &checked.edb, semi).expect("eval")
+        let mut checked = check_program(&prog).expect("check");
+        let edb = checked.edb.clone();
+        run_program(&checked.core, &checked.dict, &edb, semi, &mut checked.terms).expect("eval")
     }
 
     const TC: &str = "\
@@ -576,6 +655,152 @@ path(X, Z) :- edge(X, Y), path(Y, Z).
     }
 
     #[test]
+    fn end_to_end_terms_construct_and_bound() {
+        // @terms: build naturals via succ(X); the depth bound stops divergence
+        // and marks the result sound-but-incomplete (spec §1.4).
+        let src = "\
+@terms.
+domain elem.
+pred nat(elem): Bool.
+nat(zero).
+nat(succ(X)) :- nat(X).
+";
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "{}", diags.render_text(src));
+        let mut checked = check_program(&prog).expect("check");
+        let out = run_program(
+            &checked.core,
+            &checked.dict,
+            &checked.edb.clone(),
+            false,
+            &mut checked.terms,
+        )
+        .expect("run");
+        assert!(out.contains("nat(zero)"), "{out}");
+        assert!(out.contains("nat(succ(zero))"), "{out}");
+        assert!(out.contains("nat(succ(succ(zero)))"), "{out}");
+        // divergence hit the bound → sound-but-incomplete status line.
+        assert!(out.contains("Sound (possibly incomplete)"), "{out}");
+    }
+
+    #[test]
+    fn end_to_end_terms_decompose() {
+        // @terms: construct box(X), then unify it back apart in a body — the
+        // compound-term unification path.
+        let src = "\
+@terms.
+domain elem.
+pred base(elem): Bool.
+pred boxed(elem): Bool.
+pred unboxed(elem): Bool.
+base(a).
+base(b).
+boxed(box(X)) :- base(X).
+unboxed(Y) :- boxed(box(Y)).
+";
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "{}", diags.render_text(src));
+        let mut checked = check_program(&prog).expect("check");
+        let out = run_program(
+            &checked.core,
+            &checked.dict,
+            &checked.edb.clone(),
+            false,
+            &mut checked.terms,
+        )
+        .expect("run");
+        assert!(out.contains("boxed(box(a))"), "{out}");
+        assert!(
+            out.contains("unboxed(a)") && out.contains("unboxed(b)"),
+            "{out}"
+        );
+        // no divergence here → complete, no status line.
+        assert!(!out.contains("incomplete"), "{out}");
+    }
+
+    #[test]
+    fn end_to_end_gradient_query() {
+        // Same two-route graph; ?grad path(a,c) returns the marginal and the
+        // gradient w.r.t. each edge probability. With x=p(a,c), y=p(a,b),
+        // z=p(b,c) all 0.5: P = x+yz-xyz = 0.625; ∂/∂x = 1-yz = 0.75;
+        // ∂/∂y = z(1-x) = 0.25; ∂/∂z = y(1-x) = 0.25.
+        let src = "\
+pred edge(node, node): Bool.
+pred path(node, node): Bool.
+path(X, Y) :- edge(X, Y).
+path(X, Z) :- edge(X, Y), path(Y, Z).
+0.5 :: edge(a, c).
+0.5 :: edge(a, b).
+0.5 :: edge(b, c).
+?grad path(a, c).
+";
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "{}", diags.render_text(src));
+        let checked = check_program(&prog).expect("check");
+        assert!(grad_mode(&checked));
+        let out = run_grad(&checked, &checked.edb).expect("grad run");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "0.625 :: path(a, c)", "{out}");
+        // parse "  ∂/∂[…] = <value>" and check the three gradients.
+        let vals: Vec<f64> = lines[1..4]
+            .iter()
+            .map(|l| l.rsplit_once('=').unwrap().1.trim().parse::<f64>().unwrap())
+            .collect();
+        let want = [0.75, 0.25, 0.25];
+        for (got, w) in vals.iter().zip(&want) {
+            assert!((got - w).abs() < 1e-9, "gradient {got} vs {w}\n{out}");
+        }
+    }
+
+    #[test]
+    fn end_to_end_neural_predicate() {
+        // A neural predicate's atoms are the model's soft outputs; режим B + ?grad
+        // run over them, and the gradient names the model it backprops into.
+        let src = "\
+domain firm.
+domain label.
+neural flag(firm, label) from model \"aml_gnn\".
+pred alert(firm): Bool.
+alert(F) :- flag(F, high).
+0.8 :: flag(acme, high).
+0.3 :: flag(acme, low).
+?grad alert(acme).
+";
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "{}", diags.render_text(src));
+        let checked = check_program(&prog).expect("check");
+        assert_eq!(
+            checked.neural,
+            vec![("flag".to_string(), "aml_gnn".to_string())]
+        );
+        let out = run_grad(&checked, &checked.edb).expect("neural grad run");
+        // P(alert(acme)) = P(flag(acme,high)) = 0.8; ∂/∂high = 1, ∂/∂low = 0.
+        assert!(out.contains(":: alert(acme)"), "{out}");
+        assert!(out.contains("flag(acme, high)] = 1"), "{out}");
+        assert!(out.contains("flag(acme, low)] = 0"), "{out}");
+        assert!(out.contains("(→ model \"aml_gnn\")"), "{out}");
+    }
+
+    #[test]
+    fn neural_certain_fact_is_rejected() {
+        // A plain (certain) fact on a neural predicate is an E1010 category error.
+        let src = "\
+domain firm.
+domain label.
+neural flag(firm, label) from model \"m\".
+flag(acme, high).
+";
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "parse: {}", diags.render_text(src));
+        let err = check_program(&prog).expect_err("neural certain fact must fail");
+        assert!(
+            err.render_text(src).contains("E1010"),
+            "{}",
+            err.render_text(src)
+        );
+    }
+
+    #[test]
     fn end_to_end_asp_even_cycle() {
         // @asp with unstratified negation: two stable models {a} and {b}.
         let src = "\
@@ -613,7 +838,14 @@ path(X, Z) :- edge(X, Y), path(Y, Z).
         let loaded = load_inputs(&prog, &checked.core, &mut checked.dict, &dir).expect("load");
         let mut facts = checked.edb.clone();
         facts.extend(loaded);
-        let out = run_program(&checked.core, &checked.dict, &facts, false).expect("run");
+        let out = run_program(
+            &checked.core,
+            &checked.dict,
+            &facts,
+            false,
+            &mut checked.terms,
+        )
+        .expect("run");
 
         // transitive closure computed from the TSV edges
         assert!(out.contains("path(a, d)"), "{out}");

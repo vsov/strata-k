@@ -24,6 +24,10 @@ schema without ambiguity.
    weight is a bare JSON integer (`5`), and +∞ is the JSON string `"inf"`.
    These never collide, so `(min,+)` comparison is bit-exact (D6).
 6. **`ir_version`** is a required top-level string on every `Program` document.
+7. **Compound terms** (`@terms`) follow rule 2 and nest recursively:
+   `cons(X, nil)` is
+   `{"kind": "compound", "data": {"functor": "cons", "args": [{"kind": "var",
+   "data": {"name": "X"}}, {"kind": "const", "data": {"name": "nil"}}]}}`.
 
 ## Example (transitive closure, Bool)
 

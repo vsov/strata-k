@@ -1,26 +1,34 @@
 # Chapter 11 — The Road
 
-*Status: this chapter is the one the status boxes have been deferring to. Everything in it is design or vision, explicitly staged; the only executable things here are the ways today's tools already acknowledge tomorrow's syntax.*
+*Status: this chapter is the one the status boxes have been deferring to. Most of it is design or vision, explicitly staged — except where a piece has since crossed onto the built side (the neural boundary has), in which case the chapter runs it and marks precisely what still hasn't.*
 
 Every claim in chapters 6 through 9 you could run. Chapter 10 was design with an oracle waiting for it. What remains is the part of the project that is honestly a bet — and the prologue promised that when this book speculates, it says so. This chapter says so. It also says something rarer: exactly *which* pieces are settled engineering, which are designed-but-unbuilt, and which are open research, because those are three different kinds of promise and mixing them is how fields earn winters.
 
 ## The boundary where the network lives
 
-Start with the piece the whole design has been shaped around and has never yet shown: the neural predicate. Try it today:
+Start with the piece the whole design was shaped around: the neural predicate. It runs today.
 
 ```
-$ strata check examples/book/ch11-neural.strata
-error[E0100]: neural predicates is not implemented in Phase 0
-  --> 3:1
-   | neural flag(firm, label) from model "aml_gnn".
-   | ^^^^^^
+$ strata run examples/book/ch11-neural.strata
+0.9 :: investigate(acme)
+  ∂/∂[0.9 :: flag(acme, structuring)] = 1  (→ model "aml_gnn")
 ```
 
-Read that diagnostic carefully, because it is doing something unusual. The declaration *parsed* — the grammar of the full language, neural predicates included, is already the shipped grammar, and unbuilt features are refused by name with a stable code, not rejected as gibberish. The surface is complete; the execution is staged. That is what a future-syntax frame means mechanically, and it is a small design decision with a purpose: programs written against the full language today fail loudly and specifically, never silently and confusingly — the same courtesy the language extends to typos, extended to its own roadmap.
+Read what happened, because every concept in it is already yours. `flag` is a predicate whose facts arrive not from the file but from a model's inference — each annotated with the model's confidence, exactly as chapter 7's probabilistic facts were annotated — flowing into rules that treat it like any other soft evidence, behind the same mode-B line, with the same taint discipline: anything derived from it is soft in its signature, forever, by the type system. **The network proposes; the rules dispose.** The anti-money-laundering screen is: a graph model flags suspicious structures with confidences; hard rules — the kind chapters 6 and 8 taught — take the flags as probabilistic input and derive `investigate(X)` with a pedigree that distinguishes "flagged by the model" from "derived from ownership facts" *in the type of the conclusion*. The auditor sees which part of the answer is theorem and which part is opinion. No fragment in chapter 3, and no system in chapter 5 short of the research frontier itself, offers that.
 
-Here is what the declaration will mean, and it costs one sentence because every concept in it is already yours: `flag` is a predicate whose facts arrive not from the file but from a model's inference — each fact annotated with the model's confidence, exactly as chapter 7's probabilistic facts were annotated — flowing into rules that treat it like any other soft evidence, behind the same mode-B line, with the same taint discipline: anything derived from it is marked soft in its signature, forever, by the type system. **The network proposes; the rules dispose.** An anti-money-laundering screen in this style is: a graph model flags suspicious structures with confidences; hard rules — the kind chapters 6 and 8 taught — take the flags as probabilistic input and derive `investigate(X)` with a pedigree; the pedigree distinguishes "flagged by the model" from "derived from ownership facts" *in the type of the conclusion*. The auditor sees which part of the answer is theorem and which part is opinion. No fragment in chapter 3, and no system in chapter 5 short of the research frontier itself, offers that sentence.
+And the gradient flows back — that second line. `?grad` runs the pedigree circuit of chapter 7 backward and reports *how much each of the model's confidences mattered to the conclusion*: here `investigate(acme)` rests entirely on the one flag, so the number is `1`, and that number is exactly what a host training loop backpropagates into the network. The design's participation in the neuro-symbolic convergence of chapter 5, borrowed pieces credited there, is a query you can run.
 
-And the gradient flows back. The pedigree circuit of chapter 7 is differentiable — run backward, it tells the model *how much each of its confidences mattered to the conclusion* — so the training loop of the host framework can teach the network through the logic. That is the design's participation in the neuro-symbolic convergence of chapter 5, borrowed pieces credited there; `?grad`, parsed and staged like everything else, is its query form.
+One thing is still staged, and the language says so in the same breath. The *model itself* — the network whose forward pass produced `0.9 :: flag(acme, structuring)` — is here supplied as data, its outputs written into the program the way a batch of inferences would be dumped; wiring an actual model in-process, so the facts are computed rather than pasted, is settled engineering the reference does not yet include. And the fuller pedigree the design wants — the whole provenance as a compiled circuit, not just a marginal — is further out. Ask for it by name:
+
+```
+$ strata check examples/book/ch11-prov.strata
+error[E0100]: the Prov/Prov_k annotation is not implemented in Phase 0
+  --> 7:28
+   | pred controls(firm, firm): Prov.
+   |                            ^^^^
+```
+
+Read that diagnostic carefully, because the mechanism is the thing to keep. The declaration *parsed* — the grammar of the full language, `Prov` provenance included, is already the shipped grammar, and an unbuilt feature is refused by name with a stable code, not rejected as gibberish. The surface is complete; the execution is staged. That is what a future-syntax frame means mechanically, and it is a small design decision with a purpose: a program written against the full language today fails loudly and specifically, never silently and confusingly — the same courtesy the language extends to typos, extended to its own roadmap.
 
 ## The phases, and the kind of promise each one is
 
@@ -29,8 +37,8 @@ The road from the repository you can clone to the system of chapters 10–11, in
 1. **Scale the pedigree machinery.** Circuit compilation for exact probabilistic queries beyond toy size **[E — the knowledge-compilation field's standard toolbox]**, and top-k pedigrees for recursive programs, the declared lower-bound approximation credited in chapter 5 **[E, borrowed with attribution]**.
 2. **Incrementality.** New facts arrive, conclusions update without recomputation — the differential machinery chapter 5's line three proved out, applied to this language **[E in the literature, D in this design]**. For the trading house this is the difference between a nightly batch and a compliance engine that answers *during* the trade.
 3. **The GPU engine.** Chapter 10, executed: columnar fixpoint, hybrid planner, the three-processor split **[D, oracle in hand, related work already demonstrating the direction]**.
-4. **The neural boundary.** Predicates from models, gradients back through pedigrees **[D at the interface; E for the pieces it borrows; the *integration at production scale* honestly sits between D and R]**.
-5. **Structured values** — `@terms`, the fenced extension that trades away guaranteed termination for constructor terms (lists, trees) with declared-incompleteness controls **[D, and the fence is the design]**.
+4. **The neural boundary.** Predicates from models, gradients back through pedigrees — the interface runs today: `neural` facts flow into mode B, and `?grad` sends the query's gradient back toward the named model **[built at reference scale; the *in-process model* and *production scale* honestly sit between E and R]**.
+5. **Structured values** — `@terms` runs: constructor terms (lists, trees) via hash-consing, the language turning Turing-complete and trading away guaranteed termination, with a depth bound as the fence and a *sound-but-incomplete* status when it bites **[built at reference scale; the fence is the design]**.
 6. **The bridges that don't exist yet [R, plainly]:** probability across the `@asp` fence — the semantics of "likelihood over self-consistent worlds" — is an open research area, and this book has already told you (chapter 8) that the type checker refuses the combination rather than improvise it. If the field settles it, the fence gets a gate. Until then, the constitution holds: no arithmetic without a semantics.
 
 What is deliberately *not* on the road: nothing from chapter 5's refusals has crept back. No theorem proving, no continuous-domain constraint solving, no training framework, no general-purpose ambitions. The road makes the language more of what it is, not more things.

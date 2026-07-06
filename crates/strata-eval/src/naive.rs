@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use strata_ir::core::{CoreAtom, CoreLiteral, CoreProgram, CoreRule, CoreTerm, Semiring};
 use strata_ir::high::program::AggOp;
+use strata_ir::terms::TermTable;
 use strata_ir::trop::TropOverflow;
 
 use crate::store::{Db, Tuple};
@@ -93,6 +94,22 @@ struct Ctx<'a> {
 /// database. `edb` is seeded into a fresh [`Db`] built from the program's
 /// predicate declarations.
 pub fn run(prog: &CoreProgram, edb: &[(&str, Tuple, Ann)]) -> Result<Db, EvalError> {
+    // Term-free entry point: a throwaway term table (unbounded, never indexed
+    // because a term-free program produces no `GroundVal::Term`).
+    let mut terms = TermTable::new(0);
+    run_terms(prog, edb, &mut terms)
+}
+
+/// Like [`run`], but threads a shared [`TermTable`] for `@terms` modules: the
+/// checker interned the compound EDB facts into it, and the evaluator extends it
+/// as rule heads construct new terms. Head terms deeper than the table's bound
+/// are dropped, leaving the result sound but possibly incomplete
+/// ([`TermTable::is_complete`], spec §1.4).
+pub fn run_terms(
+    prog: &CoreProgram,
+    edb: &[(&str, Tuple, Ann)],
+    terms: &mut TermTable,
+) -> Result<Db, EvalError> {
     let mut db = Db::from_program(prog);
     for (pred, tuple, ann) in edb {
         db.relation_mut(pred)
@@ -118,7 +135,7 @@ pub fn run(prog: &CoreProgram, edb: &[(&str, Tuple, Ann)]) -> Result<Db, EvalErr
         let is_trop = prog
             .rules_in_stratum(k)
             .any(|r| pred_sem.get(&r.head.pred) == Some(&Semiring::Trop));
-        saturate_stratum(prog, &mut db, k, &pred_stratum, is_trop, universe)?;
+        saturate_stratum(prog, &mut db, k, &pred_stratum, is_trop, universe, terms)?;
     }
     Ok(db)
 }
@@ -145,6 +162,7 @@ pub(crate) fn is_aggregate_rule(rule: &CoreRule) -> bool {
 }
 
 /// Naive `T_P` to a fixpoint over one stratum, with lower strata frozen.
+#[allow(clippy::too_many_arguments)]
 fn saturate_stratum(
     prog: &CoreProgram,
     db: &mut Db,
@@ -152,13 +170,14 @@ fn saturate_stratum(
     pred_stratum: &HashMap<String, u32>,
     is_trop: bool,
     universe: usize,
+    terms: &mut TermTable,
 ) -> Result<(), EvalError> {
     // Aggregate rules are non-recursive (bodies in lower strata): evaluate once.
     for rule in prog
         .rules_in_stratum(stratum)
         .filter(|r| is_aggregate_rule(r))
     {
-        eval_aggregate_rule(db, rule, pred_stratum, stratum)?;
+        eval_aggregate_rule(db, rule, pred_stratum, stratum, terms)?;
     }
 
     // Bellman-Ford bound: min-plus SSSP converges within `universe` relaxation
@@ -184,6 +203,7 @@ fn saturate_stratum(
             let mut binding = vec![None; rule.var_count as usize];
             solve(
                 &ctx,
+                terms,
                 &rule.body,
                 0,
                 &mut binding,
@@ -191,7 +211,10 @@ fn saturate_stratum(
                 &mut solved,
             )?;
             for (b, acc) in solved {
-                derived.push((rule.head.pred.clone(), build_head(&rule.head, &b)?, acc));
+                // A head term deeper than the bound is dropped (sound-but-incomplete).
+                if let Some(tuple) = build_head(&rule.head, &b, terms)? {
+                    derived.push((rule.head.pred.clone(), tuple, acc));
+                }
             }
         }
         let mut changed = false;
@@ -210,8 +233,10 @@ fn saturate_stratum(
 }
 
 /// Solve a rule body, pushing each completed `(binding, product-annotation)`.
+#[allow(clippy::too_many_arguments)]
 fn solve(
     ctx: &Ctx,
+    terms: &mut TermTable,
     body: &[CoreLiteral],
     idx: usize,
     binding: &mut [Option<GroundVal>],
@@ -224,15 +249,18 @@ fn solve(
     }
     match &body[idx] {
         CoreLiteral::Pos(atom) => {
+            // Snapshot the rows so the db borrow ends before recursing (which may
+            // mutate `terms`). Cheap: a Vec of (tuple, ann) clones.
             let rel = ctx
                 .db
                 .relation(&atom.pred)
                 .ok_or_else(|| EvalError::UnknownPred(atom.pred.clone()))?;
-            for (tuple, &row_ann) in &rel.rows {
+            let rows: Vec<(Tuple, Ann)> = rel.rows.iter().map(|(t, &a)| (t.clone(), a)).collect();
+            for (tuple, row_ann) in rows {
                 let mut b = binding.to_vec();
-                if unify(&atom.args, tuple, &mut b) {
+                if unify(&atom.args, &tuple, &mut b, terms) {
                     let new_acc = acc.otimes(row_ann).map_err(EvalError::Overflow)?;
-                    solve(ctx, body, idx + 1, &mut b, new_acc, out)?;
+                    solve(ctx, terms, body, idx + 1, &mut b, new_acc, out)?;
                 }
             }
             Ok(())
@@ -248,17 +276,21 @@ fn solve(
                     pred: atom.pred.clone(),
                 });
             }
-            let tuple = ground_atom(atom, binding, true)?;
-            let rel = ctx
-                .db
-                .relation(&atom.pred)
-                .ok_or_else(|| EvalError::UnknownPred(atom.pred.clone()))?;
-            if rel.rows.contains_key(&tuple) {
-                // negation fails for this binding → prune this derivation branch
-                Ok(())
+            // A negated atom whose term exceeds the depth bound cannot be present,
+            // so the negation holds (the derivation continues).
+            let present = match ground_atom(atom, binding, true, terms)? {
+                Some(tuple) => ctx
+                    .db
+                    .relation(&atom.pred)
+                    .ok_or_else(|| EvalError::UnknownPred(atom.pred.clone()))?
+                    .rows
+                    .contains_key(&tuple),
+                None => false,
+            };
+            if present {
+                Ok(()) // negation fails → prune this branch
             } else {
-                // negation holds; `⊗` with Bool identity leaves acc unchanged
-                solve(ctx, body, idx + 1, binding, acc, out)
+                solve(ctx, terms, body, idx + 1, binding, acc, out)
             }
         }
     }
@@ -270,6 +302,7 @@ pub(crate) fn eval_aggregate_rule(
     rule: &CoreRule,
     pred_stratum: &HashMap<String, u32>,
     cur: u32,
+    terms: &mut TermTable,
 ) -> Result<(), EvalError> {
     // Defensive: aggregate bodies must be strictly lower (non-recursive; CHECK-9).
     for lit in &rule.body {
@@ -304,7 +337,15 @@ pub(crate) fn eval_aggregate_rule(
     };
     let mut solved = Vec::new();
     let mut binding = vec![None; rule.var_count as usize];
-    solve(&ctx, &rule.body, 0, &mut binding, Ann::Unit, &mut solved)?;
+    solve(
+        &ctx,
+        terms,
+        &rule.body,
+        0,
+        &mut binding,
+        Ann::Unit,
+        &mut solved,
+    )?;
 
     // Group by the non-aggregate head args; fold the aggregand.
     let mut groups: HashMap<Vec<GroundVal>, Vec<GroundVal>> = HashMap::new();
@@ -314,7 +355,7 @@ pub(crate) fn eval_aggregate_rule(
             if i == agg_index {
                 continue;
             }
-            key.push(head_arg_value(arg, b)?);
+            key.push(head_arg_value(arg, b, terms)?);
         }
         let aggregand = b[agg_slot as usize].ok_or(EvalError::UnsafeHeadVar(agg_slot))?;
         groups.entry(key).or_default().push(aggregand);
@@ -342,7 +383,7 @@ fn fold_aggregate(op: AggOp, vals: &[GroundVal]) -> Result<i64, EvalError> {
         vals.iter()
             .map(|v| match v {
                 GroundVal::Int(n) => Ok(*n),
-                GroundVal::Sym(_) => Err(EvalError::NonIntegerAggregand),
+                GroundVal::Sym(_) | GroundVal::Term(_) => Err(EvalError::NonIntegerAggregand),
             })
             .collect()
     };
@@ -361,77 +402,133 @@ fn fold_aggregate(op: AggOp, vals: &[GroundVal]) -> Result<i64, EvalError> {
     }
 }
 
-/// Unify an atom's terms against a ground tuple under `binding`.
+/// Unify an atom's terms against a ground tuple under `binding`; `terms`
+/// decomposes ground compound values (`@terms`).
 pub(crate) fn unify(
     args: &[CoreTerm],
     tuple: &[GroundVal],
     binding: &mut [Option<GroundVal>],
+    terms: &TermTable,
 ) -> bool {
     if args.len() != tuple.len() {
         return false;
     }
-    for (arg, &val) in args.iter().zip(tuple) {
-        match arg {
-            CoreTerm::Var { slot } => match binding[*slot as usize] {
-                Some(bound) if bound != val => return false,
-                Some(_) => {}
-                None => binding[*slot as usize] = Some(val),
-            },
-            CoreTerm::Const { sym } => {
-                if val != GroundVal::Sym(*sym) {
-                    return false;
-                }
-            }
-            CoreTerm::Int { value } => {
-                if val != GroundVal::Int(*value) {
-                    return false;
-                }
-            }
-            CoreTerm::Agg { .. } => return false, // aggregates never appear in bodies
-        }
-    }
-    true
+    args.iter()
+        .zip(tuple)
+        .all(|(arg, &val)| unify_term(arg, val, binding, terms))
 }
 
-/// Build a ground tuple from an atom under a (complete) binding. `negated`
-/// selects the appropriate "unbound variable" error variant.
+/// Unify one term against one ground value, recursing through compound terms.
+fn unify_term(
+    arg: &CoreTerm,
+    val: GroundVal,
+    binding: &mut [Option<GroundVal>],
+    terms: &TermTable,
+) -> bool {
+    match arg {
+        CoreTerm::Var { slot } => match binding[*slot as usize] {
+            Some(bound) => bound == val,
+            None => {
+                binding[*slot as usize] = Some(val);
+                true
+            }
+        },
+        CoreTerm::Const { sym } => val == GroundVal::Sym(*sym),
+        CoreTerm::Int { value } => val == GroundVal::Int(*value),
+        CoreTerm::Agg { .. } => false, // aggregates never appear in bodies
+        CoreTerm::Compound { functor, args } => {
+            // `val` must be a compound with the same functor and arity; recurse.
+            let GroundVal::Term(id) = val else {
+                return false;
+            };
+            let (f, gargs) = terms.get(id);
+            if f != *functor || gargs.len() != args.len() {
+                return false;
+            }
+            // Clone the ground args to release the borrow on `terms` before recursing.
+            let gargs = gargs.to_vec();
+            args.iter()
+                .zip(gargs)
+                .all(|(a, gv)| unify_term(a, gv, binding, terms))
+        }
+    }
+}
+
+/// Build a ground tuple from an atom under a (complete) binding, interning any
+/// constructed compound terms. `Ok(None)` ⇒ a term exceeded the depth bound and
+/// the derivation is dropped (sound-but-incomplete, spec §1.4). `negated` selects
+/// the appropriate "unbound variable" error variant.
 fn ground_atom(
     atom: &CoreAtom,
     binding: &[Option<GroundVal>],
     negated: bool,
-) -> Result<Tuple, EvalError> {
+    terms: &mut TermTable,
+) -> Result<Option<Tuple>, EvalError> {
     let mut tuple = Vec::with_capacity(atom.args.len());
     for arg in &atom.args {
-        tuple.push(match arg {
-            CoreTerm::Var { slot } => binding[*slot as usize].ok_or(if negated {
-                EvalError::UnsafeNegVar(*slot)
-            } else {
-                EvalError::UnsafeHeadVar(*slot)
-            })?,
-            CoreTerm::Const { sym } => GroundVal::Sym(*sym),
-            CoreTerm::Int { value } => GroundVal::Int(*value),
-            CoreTerm::Agg { .. } => {
-                return Err(EvalError::Unsupported("aggregate in atom position"))
-            }
-        });
+        match ground_term(arg, binding, negated, terms)? {
+            Some(v) => tuple.push(v),
+            None => return Ok(None),
+        }
     }
-    Ok(tuple)
+    Ok(Some(tuple))
 }
 
-fn head_arg_value(arg: &CoreTerm, binding: &[Option<GroundVal>]) -> Result<GroundVal, EvalError> {
+/// Materialize one term under a binding, interning compounds. `Ok(None)` ⇒ the
+/// term (or a subterm) exceeded the depth bound.
+fn ground_term(
+    arg: &CoreTerm,
+    binding: &[Option<GroundVal>],
+    negated: bool,
+    terms: &mut TermTable,
+) -> Result<Option<GroundVal>, EvalError> {
+    Ok(match arg {
+        CoreTerm::Var { slot } => Some(binding[*slot as usize].ok_or(if negated {
+            EvalError::UnsafeNegVar(*slot)
+        } else {
+            EvalError::UnsafeHeadVar(*slot)
+        })?),
+        CoreTerm::Const { sym } => Some(GroundVal::Sym(*sym)),
+        CoreTerm::Int { value } => Some(GroundVal::Int(*value)),
+        CoreTerm::Agg { .. } => return Err(EvalError::Unsupported("aggregate in atom position")),
+        CoreTerm::Compound { functor, args } => {
+            let mut gargs = Vec::with_capacity(args.len());
+            for a in args {
+                match ground_term(a, binding, negated, terms)? {
+                    Some(v) => gargs.push(v),
+                    None => return Ok(None),
+                }
+            }
+            match terms.intern(*functor, gargs) {
+                Ok(id) => Some(GroundVal::Term(id)),
+                Err(_) => {
+                    terms.note_drop(); // depth bound → sound-but-incomplete
+                    None
+                }
+            }
+        }
+    })
+}
+
+fn head_arg_value(
+    arg: &CoreTerm,
+    binding: &[Option<GroundVal>],
+    terms: &mut TermTable,
+) -> Result<GroundVal, EvalError> {
     match arg {
-        CoreTerm::Var { slot } => binding[*slot as usize].ok_or(EvalError::UnsafeHeadVar(*slot)),
-        CoreTerm::Const { sym } => Ok(GroundVal::Sym(*sym)),
-        CoreTerm::Int { value } => Ok(GroundVal::Int(*value)),
         CoreTerm::Agg { .. } => Err(EvalError::MalformedAggregateHead),
+        _ => ground_term(arg, binding, false, terms)?.ok_or(EvalError::Unsupported(
+            "@terms depth bound in aggregate group key",
+        )),
     }
 }
 
 pub(crate) fn build_head(
     head: &CoreAtom,
     binding: &[Option<GroundVal>],
-) -> Result<Tuple, EvalError> {
-    ground_atom(head, binding, false)
+    terms: &mut TermTable,
+) -> Result<Option<Tuple>, EvalError> {
+    ground_atom(head, binding, false, terms)
 }
 
 /// Negation check shared with semi-naive: does `atom` (all vars bound) hold as a
@@ -443,6 +540,7 @@ pub(crate) fn negation_holds(
     db: &Db,
     pred_stratum: &HashMap<String, u32>,
     cur_stratum: u32,
+    terms: &mut TermTable,
 ) -> Result<bool, EvalError> {
     let ns = pred_stratum
         .get(&atom.pred)
@@ -452,7 +550,10 @@ pub(crate) fn negation_holds(
             pred: atom.pred.clone(),
         });
     }
-    let tuple = ground_atom(atom, binding, true)?;
+    // A negated atom whose term exceeds the depth bound is necessarily absent.
+    let Some(tuple) = ground_atom(atom, binding, true, terms)? else {
+        return Ok(true);
+    };
     let rel = db
         .relation(&atom.pred)
         .ok_or_else(|| EvalError::UnknownPred(atom.pred.clone()))?;

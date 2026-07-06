@@ -20,15 +20,18 @@ const RUNNABLE: &[&str] = &[
     "ch08-portfolio.strata",
     "ch09-vignette-draft2.strata",
     "ch09-vignette.strata",
+    // ch. 11: the neural predicate runs now — soft facts from a model, `?grad`
+    // backpropagating the query's gradient into it.
+    "ch11-neural.strata",
 ];
 
 /// Listings the book shows being *rejected*: each must fail `strata check` with
 /// diagnostics (exit 1) and emit the named stable code. `ch09-vignette-draft`
-/// is the LLM's wrong first attempt the checker catches (ch. 9); `ch11-neural`
+/// is the LLM's wrong first attempt the checker catches (ch. 9); `ch11-prov`
 /// is a future-syntax frame that parses then reports "not implemented" (ch. 11).
 const CHECK_FAILS: &[(&str, &str)] = &[
     ("ch09-vignette-draft.strata", "E1001"),
-    ("ch11-neural.strata", "E0100"),
+    ("ch11-prov.strata", "E0100"),
 ];
 
 fn book_dir() -> PathBuf {

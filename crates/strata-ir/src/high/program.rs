@@ -143,6 +143,8 @@ pub enum Term {
     Int { value: i64 },
     /// Aggregate head term `agg⟨Var⟩` (spec 1.3).
     Agg { op: AggOp, var: String },
+    /// Constructor term `functor(args...)` (`@terms`, spec §1.4).
+    Compound { functor: String, args: Vec<Term> },
 }
 
 /// Aggregate operators (spec 1.3). Pure-unit enum → bare string (rule 3).

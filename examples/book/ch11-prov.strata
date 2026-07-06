@@ -1,0 +1,8 @@
+% Future syntax: the `Prov` annotation asks for full provenance — the pedigree
+% of every derived fact as a compiled circuit (режим B by knowledge compilation,
+% SDD/WMC). The grammar accepts it; the engine does not build it yet, so the
+% checker refuses it by name with a stable code — a future-syntax frame.
+domain firm.
+pred owns(firm, firm): Bool.
+pred controls(firm, firm): Prov.
+controls(X, Y) :- owns(X, Y).

@@ -27,26 +27,40 @@ The workspace is layered so the base crate has no sibling dependencies:
 
 ```
 strata-ir      IR data model (High-IR + Core-IR), symbol dictionary, diagnostics,
-               JSON schema, tropical weight — the shared base (no sibling deps)
+               JSON schema, tropical weight, hash-cons term table (@terms) —
+               the shared base (no sibling deps)
 strata-front   lexer (logos), recursive-descent parser (surface → High-IR),
                canonical printer, fmt; owns the E0xxx diagnostic range
 strata-check   dependency graph, stratification, type/semiring checks (table 2.4),
                normalization High-IR → Core-IR; owns the E1xxx diagnostic range
 strata-eval    the reference interpreter over Core-IR — naive T_P, semi-naive,
-               and exact probabilistic marginals (режим B); the differential oracle
-strata-asp     the reference answer-set solver (grounding + stable models)
+               exact probabilistic marginals + gradients (режим B), DRed
+               incremental maintenance; the differential oracle
+strata-asp     the answer-set stack — reference solver (grounding + stable
+               models), choice/cardinality normalization, aspif emission, clasp
+               embedding, unfounded-set verification, search-guidance ablation
+strata-gpu     the GPU execution engine (cuda-feature-gated; CPU stub without) —
+               device-resident Bool/Trop fixpoints, WCOJ, query planner
+               (CBO + hypertree + tensor contraction), partition groundwork,
+               ASP grounding-simplification
+strata-terms   structural-term machinery — interning, depth bounds, subsumption,
+               magic sets, Andersen points-to (pure CPU)
+strata-prob    provenance circuits for режим B — SDD-class circuit, exact WMC,
+               gradients, top-k, MNIST-sum (pure CPU)
 strata-cli     the `strata` binary — ties the crates into the end-to-end path
 ```
 
 Dependency edges point only *down*: `strata-front` and `strata-check` are
 siblings that each depend only on `strata-ir`; `strata-eval` and `strata-asp`
-depend on `strata-ir`; `strata-cli` depends on all of them. Shared data types
-(the symbol dictionary, `GroundVal`/`GroundFact`, the `Diagnostics` collector)
-live in `strata-ir` precisely so the siblings can share them without depending on
-each other.
+depend on `strata-ir`; `strata-cli` depends on all of them. `strata-gpu`,
+`strata-terms`, and `strata-prob` are self-contained engine crates validated
+against the reference stack. Shared data types (the symbol dictionary,
+`GroundVal`/`GroundFact`, the `TermTable`, the `Diagnostics` collector) live in
+`strata-ir` precisely so the siblings can share them without depending on each
+other.
 
 The workspace forbids `unsafe` by default (`unsafe_code = "forbid"`), relaxed
-per-crate only when the device-side GPU work arrives. MSRV is **Rust 1.82**.
+only in `strata-gpu` for device launches. MSRV is **Rust 1.82**.
 
 ## The two-level IR
 
@@ -103,21 +117,35 @@ The reference interpreter is the oracle. Three overlapping checks defend it:
    references (exact enumeration; reduct) that future fast/compiled/GPU methods
    must reproduce bit-for-bit.
 
-## Roadmap (designed, not yet built)
+## Beyond the CPU pipeline
 
-Everything in this repository is the CPU reference stack. The following are
-designed and reserved in the IR and grammar — they parse into valid IR and
-return a stable *"not implemented in Phase 0"* diagnostic — but are not executed
-here:
+Everything the CLI executes end-to-end lives in the reference stack above —
+including `?grad` gradients, `neural` predicates, and `@terms` structural terms.
+Beside it, three engine crates carry the fast/parallel implementations, each
+validated bit-for-bit against a reference oracle:
 
-- **GPU execution engine** — a columnar, semi-naive fixpoint on the GPU,
-  consuming the same Core-IR beside `strata-eval`.
-- **Knowledge compilation** for режим B (SDD/WMC, top-k proofs) to replace exact
-  possible-world enumeration.
-- **Incremental (differential) evaluation** — update conclusions as facts arrive,
-  without recomputing.
-- **`Prov` / `Prov_k` provenance**, **`neural` predicates**, **`@terms`**
-  (structural terms), and **`?grad`** (gradient) queries.
+- **`strata-gpu`** — the GPU execution engine (`cuda`-feature-gated; a stub
+  keeps CUDA-free builds green). Device-resident columnar semi-naive fixpoints
+  for Bool (transitive closure) and Trop (shortest paths) at 10⁸-edge scale;
+  worst-case-optimal joins (leapfrog triejoin for triangles/cliques); the query
+  planner (cost-based ordering, hypertree decomposition, tensor-contraction
+  width); radix/hypercube partition groundwork for multi-GPU; and the ASP
+  grounding-simplification pass. Every kernel is diffed against an independent
+  CPU oracle.
+- **`strata-prob`** — knowledge compilation for режим B: provenance circuits
+  (decomposable-AND / deterministic-OR), exact weighted model counting,
+  reverse-mode gradients, top-k proofs, and a compilation cache — demonstrated
+  by MNIST-sum learning digits from sum-only supervision. `strata-eval::prob`
+  (exact enumeration) is its oracle.
+- **`strata-terms`** — the structural-term machinery behind `@terms`: interning,
+  depth bounds, subsumption, magic sets, and an Andersen points-to workload.
+- **`strata-eval::dred`** — DRed (delete/rederive) incremental maintenance,
+  checked against from-scratch recomputation.
+
+Still designed-but-unbuilt (parses, returns the stable *"not implemented in
+Phase 0"* diagnostic): the **`Prov` / `Prov_k`** provenance annotations — the
+full pedigree of every derived fact as a compiled circuit, wired through the
+surface language. The `strata-prob` circuits are the machinery it will stand on.
 
 The point of shipping the slow references first is that each fast engine has a
 bit-exact oracle to be tested against from day one.

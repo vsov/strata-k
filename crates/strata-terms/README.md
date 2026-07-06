@@ -5,6 +5,12 @@ CPU (the host stage); the device-side interning follow-up lives in
 [`strata-gpu`](../strata-gpu). This is what lets Datalog carry function symbols
 (lists, trees, records) without diverging.
 
+The surface-language `@terms` feature (constructor terms in `.strata` programs,
+run by `strata run`) uses the same hash-cons design via `strata-ir::terms` in
+the reference interpreter; this crate is the standalone Phase-3 machinery —
+subsumption, magic sets, and the points-to workload — that the engine work
+builds on.
+
 ## What's here
 
 | Module | Phase-3 task | What it does |

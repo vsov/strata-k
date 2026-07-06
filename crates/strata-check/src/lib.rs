@@ -16,6 +16,7 @@ use strata_ir::diag::Span;
 use strata_ir::dict::SymbolDict;
 use strata_ir::high::program::{Atom, ItemKind, Literal, Program, QueryKind, Term};
 use strata_ir::high::sig::Annotation;
+use strata_ir::terms::{TermTable, DEFAULT_MAX_DEPTH};
 use strata_ir::value::{GroundFact, GroundVal};
 
 pub use diagnostics::{codes, Diagnostics};
@@ -40,6 +41,13 @@ pub struct Checked {
     pub prob_edb: Vec<(String, Vec<GroundVal>, f64)>,
     /// Queries in source order.
     pub queries: Vec<QuerySpec>,
+    /// Neural predicates and the model each draws its soft facts from
+    /// (`neural n(...) from model "m"`). Their facts live in `prob_edb`; `?grad`
+    /// differentiates the query back through them into the model.
+    pub neural: Vec<(String, String)>,
+    /// The hash-cons table for `@terms` compound values: the EDB's compound facts
+    /// are interned here, and the evaluator extends it as rule heads build terms.
+    pub terms: TermTable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -81,6 +89,9 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
     let mut declared: HashMap<String, PredInfo> = HashMap::new();
     let mut declared_span: HashMap<String, Span> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
+    // Neural predicates → their model (facts are the model's soft outputs).
+    let mut neural: Vec<(String, String)> = Vec::new();
+    let mut neural_preds: std::collections::HashSet<String> = Default::default();
     for item in &program.items {
         if let ItemKind::Predicate(p) = &item.node {
             if !declared.contains_key(&p.name) {
@@ -94,6 +105,11 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
                 },
             );
             declared_span.insert(p.name.clone(), item.span);
+            if let Some(spec) = &p.neural {
+                if neural_preds.insert(p.name.clone()) {
+                    neural.push((p.name.clone(), spec.model.clone()));
+                }
+            }
         }
     }
 
@@ -229,6 +245,7 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
     let mut edb: Vec<GroundFact> = Vec::new();
     let mut prob_edb: Vec<(String, Vec<GroundVal>, f64)> = Vec::new();
     let mut queries: Vec<QuerySpec> = Vec::new();
+    let mut terms = TermTable::new(DEFAULT_MAX_DEPTH);
 
     for item in &program.items {
         match &item.node {
@@ -240,14 +257,32 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
                 }
             }
             ItemKind::Fact(f) => {
-                if let Some(args) = ground_fact_args(f, item.span, &mut dict, &mut diags) {
+                if let Some(args) =
+                    ground_fact_args(f, item.span, &mut dict, &mut terms, &mut diags)
+                {
                     match f.prob {
                         Some(p) => prob_edb.push((f.atom.pred.clone(), args, p)),
-                        None => edb.push(GroundFact {
-                            pred: f.atom.pred.clone(),
-                            args,
-                            weight: f.weight,
-                        }),
+                        None => {
+                            // A neural predicate's atoms are the model's soft
+                            // outputs — a certain fact on one is a category error.
+                            if neural_preds.contains(&f.atom.pred) {
+                                diags.error(
+                                    codes::NEURAL_FACT_NOT_SOFT,
+                                    format!(
+                                        "`{}` is a neural predicate; its facts are the model's \
+                                         soft outputs and must be probabilistic (`p :: {}(...)`)",
+                                        f.atom.pred, f.atom.pred
+                                    ),
+                                    item.span,
+                                );
+                            } else {
+                                edb.push(GroundFact {
+                                    pred: f.atom.pred.clone(),
+                                    args,
+                                    weight: f.weight,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -259,7 +294,9 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
                     .map(|t| match t {
                         Term::Const { name } => Some(GroundVal::Sym(dict.intern(name))),
                         Term::Int { value } => Some(GroundVal::Int(*value)),
-                        Term::Var { .. } | Term::Agg { .. } => None,
+                        // A ground compound query pattern is resolved at run time
+                        // against the term table; treat as an open position here.
+                        Term::Var { .. } | Term::Agg { .. } | Term::Compound { .. } => None,
                     })
                     .collect();
                 queries.push(QuerySpec {
@@ -299,12 +336,54 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
         edb,
         prob_edb,
         queries,
+        neural,
+        terms,
     })
 }
 
 fn literal_atom(lit: &Literal) -> &Atom {
     match lit {
         Literal::Pos(a) | Literal::Neg(a) => a,
+    }
+}
+
+/// Assign a canonical slot to each variable a term mentions, recursing into
+/// compound terms (`@terms`) so a variable inside `cons(X, Xs)` is bound too.
+fn assign_vars(t: &Term, slots: &mut HashMap<String, u32>) {
+    match t {
+        Term::Var { name } => {
+            let n = slots.len() as u32;
+            slots.entry(name.clone()).or_insert(n);
+        }
+        Term::Agg { var, .. } => {
+            let n = slots.len() as u32;
+            slots.entry(var.clone()).or_insert(n);
+        }
+        Term::Compound { args, .. } => {
+            for a in args {
+                assign_vars(a, slots);
+            }
+        }
+        Term::Const { .. } | Term::Int { .. } => {}
+    }
+}
+
+/// Lower a High-IR term to Core-IR, recursively for compounds (`@terms`).
+fn lower_term(t: &Term, slots: &HashMap<String, u32>, dict: &mut SymbolDict) -> CoreTerm {
+    match t {
+        Term::Var { name } => CoreTerm::Var { slot: slots[name] },
+        Term::Const { name } => CoreTerm::Const {
+            sym: dict.intern(name),
+        },
+        Term::Int { value } => CoreTerm::Int { value: *value },
+        Term::Agg { op, var } => CoreTerm::Agg {
+            op: *op,
+            slot: slots[var],
+        },
+        Term::Compound { functor, args } => CoreTerm::Compound {
+            functor: dict.intern(functor),
+            args: args.iter().map(|a| lower_term(a, slots, dict)).collect(),
+        },
     }
 }
 
@@ -423,11 +502,22 @@ fn check_semirings(
 
 fn collect_vars<'a>(atom: &'a Atom, f: &mut impl FnMut(&'a str)) {
     for t in &atom.args {
-        match t {
-            Term::Var { name } => f(name),
-            Term::Agg { var, .. } => f(var),
-            _ => {}
+        collect_term_vars(t, f);
+    }
+}
+
+/// Collect variables of a term, recursing into compound terms (`@terms`) so a
+/// variable inside `box(Y)` counts for range-restriction and safety.
+fn collect_term_vars<'a>(t: &'a Term, f: &mut impl FnMut(&'a str)) {
+    match t {
+        Term::Var { name } => f(name),
+        Term::Agg { var, .. } => f(var),
+        Term::Compound { args, .. } => {
+            for a in args {
+                collect_term_vars(a, f);
+            }
         }
+        Term::Const { .. } | Term::Int { .. } => {}
     }
 }
 
@@ -438,49 +528,21 @@ fn lower_rule(
     idx: &HashMap<&str, usize>,
     dict: &mut SymbolDict,
 ) -> Option<CoreRule> {
-    // Assign a canonical slot to each variable, in first-appearance order.
+    // Assign a canonical slot to each variable, in first-appearance order,
+    // recursing into compound terms (`@terms`) so `cons(X, Xs)` binds X and Xs.
     let mut slots: HashMap<String, u32> = HashMap::new();
-    let assign = |name: &str, slots: &mut HashMap<String, u32>| -> u32 {
-        let n = slots.len() as u32;
-        *slots.entry(name.to_string()).or_insert(n)
-    };
-    // Pre-scan head then body so slots are stable and deterministic.
     for t in &r.head.args {
-        match t {
-            Term::Var { name } => {
-                assign(name, &mut slots);
-            }
-            Term::Agg { var, .. } => {
-                assign(var, &mut slots);
-            }
-            _ => {}
-        }
+        assign_vars(t, &mut slots);
     }
     for lit in &r.body {
         for t in &literal_atom(lit).args {
-            if let Term::Var { name } = t {
-                assign(name, &mut slots);
-            }
+            assign_vars(t, &mut slots);
         }
     }
 
     let lower_atom = |a: &Atom, dict: &mut SymbolDict| CoreAtom {
         pred: a.pred.clone(),
-        args: a
-            .args
-            .iter()
-            .map(|t| match t {
-                Term::Var { name } => CoreTerm::Var { slot: slots[name] },
-                Term::Const { name } => CoreTerm::Const {
-                    sym: dict.intern(name),
-                },
-                Term::Int { value } => CoreTerm::Int { value: *value },
-                Term::Agg { op, var } => CoreTerm::Agg {
-                    op: *op,
-                    slot: slots[var],
-                },
-            })
-            .collect(),
+        args: a.args.iter().map(|t| lower_term(t, &slots, dict)).collect(),
     };
 
     let head = lower_atom(&r.head, dict);
@@ -511,14 +573,14 @@ fn ground_fact_args(
     f: &strata_ir::high::Fact,
     span: Span,
     dict: &mut SymbolDict,
+    terms: &mut TermTable,
     diags: &mut Diagnostics,
 ) -> Option<Vec<GroundVal>> {
     let mut args = Vec::with_capacity(f.atom.args.len());
     for t in &f.atom.args {
-        match t {
-            Term::Const { name } => args.push(GroundVal::Sym(dict.intern(name))),
-            Term::Int { value } => args.push(GroundVal::Int(*value)),
-            Term::Var { .. } | Term::Agg { .. } => {
+        match ground_fact_term(t, dict, terms) {
+            Ok(v) => args.push(v),
+            Err(()) => {
                 diags.error(
                     codes::NON_GROUND_FACT,
                     format!("fact `{}` contains a non-ground term", f.atom.pred),
@@ -529,6 +591,32 @@ fn ground_fact_args(
         }
     }
     Some(args)
+}
+
+/// Resolve one fact term to a ground value, interning compound (`@terms`) terms
+/// into the table. `Err` on a variable/aggregate (a fact must be ground).
+fn ground_fact_term(
+    t: &Term,
+    dict: &mut SymbolDict,
+    terms: &mut TermTable,
+) -> Result<GroundVal, ()> {
+    match t {
+        Term::Const { name } => Ok(GroundVal::Sym(dict.intern(name))),
+        Term::Int { value } => Ok(GroundVal::Int(*value)),
+        Term::Compound { functor, args } => {
+            let functor = dict.intern(functor);
+            let mut gargs = Vec::with_capacity(args.len());
+            for a in args {
+                gargs.push(ground_fact_term(a, dict, terms)?);
+            }
+            // Facts are finite, but honour the bound anyway (sound-but-incomplete).
+            terms
+                .intern(functor, gargs)
+                .map(GroundVal::Term)
+                .map_err(|_| ())
+        }
+        Term::Var { .. } | Term::Agg { .. } => Err(()),
+    }
 }
 
 #[cfg(test)]

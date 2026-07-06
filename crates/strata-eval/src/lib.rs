@@ -13,7 +13,7 @@ pub mod seminaive;
 pub mod store;
 pub mod value;
 
-pub use naive::{run, EvalError};
+pub use naive::{run, run_terms, EvalError};
 pub use prob::{marginals, ProbError};
 pub use seminaive::run_semi_naive;
 pub use store::{Db, Relation, Tuple};

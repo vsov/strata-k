@@ -59,7 +59,9 @@ fn atom_to_dl(a: &CoreAtom, dict: &SymbolDict) -> Option<String> {
         args.push(match t {
             CoreTerm::Var { slot } => format!("v{slot}"),
             CoreTerm::Const { sym } => format!("{:?}", dict.resolve(*sym)?), // quoted symbol
-            CoreTerm::Int { .. } | CoreTerm::Agg { .. } => return None,      // not Bool-comparable
+            // Int / aggregate / compound terms are outside the Soufflé-comparable
+            // Bool fragment.
+            CoreTerm::Int { .. } | CoreTerm::Agg { .. } | CoreTerm::Compound { .. } => return None,
         });
     }
     Some(format!("{}({})", a.pred, args.join(", ")))
@@ -90,6 +92,7 @@ fn resolve(v: &GroundVal, dict: &SymbolDict) -> String {
     match v {
         GroundVal::Sym(id) => dict.resolve(*id).unwrap_or("?").to_string(),
         GroundVal::Int(n) => n.to_string(),
+        GroundVal::Term(id) => format!("<term#{}>", id.0), // @terms are outside the Bool fragment
     }
 }
 
@@ -336,6 +339,8 @@ fn gen_bool(seed: u64) -> Checked {
         edb,
         prob_edb: Vec::new(),
         queries: Vec::new(),
+        neural: Vec::new(),
+        terms: strata_ir::terms::TermTable::new(strata_ir::terms::DEFAULT_MAX_DEPTH),
     }
 }
 

@@ -20,6 +20,7 @@ pub mod dict;
 pub mod high;
 pub mod output;
 pub mod schema;
+pub mod terms;
 pub mod trop;
 pub mod value;
 pub mod version;

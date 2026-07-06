@@ -1,0 +1,17 @@
+% Structural terms (@terms, spec §1.4): constructor terms via hash-consing.
+% The language becomes Turing-complete, so a depth bound fences divergence — a
+% term deeper than the bound is dropped and the result is flagged
+% "Sound (possibly incomplete)".
+@terms.
+domain elem.
+
+% Build the Peano naturals: zero, succ(zero), succ(succ(zero)), ...
+pred nat(elem): Bool.
+nat(zero).
+nat(succ(N)) :- nat(N).
+
+% Compound facts work too, and rule bodies decompose them by unification.
+pred tree(elem): Bool.
+pred root(elem): Bool.
+tree(node(leaf, one, leaf)).
+root(V) :- tree(node(_L, V, _R)).

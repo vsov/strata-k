@@ -350,7 +350,9 @@ impl<'a> Parser<'a> {
         self.expect(&Tok::Model, "`model`")?;
         let model = self.expect_str("a model name")?;
         self.expect(&Tok::Dot, "`.`")?;
-        self.not_impl(kw, "neural predicates");
+        let _ = kw;
+        // A neural predicate is Bool-deductive; its ground atoms are the model's
+        // soft (probabilistic) outputs, differentiated back through `?grad`.
         let effects = Effects {
             determinism: Determinism::Stochastic,
             ..Effects::default()
@@ -359,7 +361,7 @@ impl<'a> Parser<'a> {
             name,
             sig: Signature {
                 args,
-                annotation: Annotation::Prov,
+                annotation: Annotation::Bool,
                 effects,
             },
             neural: Some(NeuralSpec { model }),
@@ -390,19 +392,16 @@ impl<'a> Parser<'a> {
     }
 
     fn query(&mut self) -> PResult<Item> {
-        let (kind, span) = match self.cur() {
-            Some(Tok::Question) => (QueryKind::Plain, self.cur_span()),
-            Some(Tok::QProb) => (QueryKind::Prob, self.cur_span()),
-            Some(Tok::QGrad) => (QueryKind::Grad, self.cur_span()),
+        let kind = match self.cur() {
+            Some(Tok::Question) => QueryKind::Plain,
+            Some(Tok::QProb) => QueryKind::Prob,
+            Some(Tok::QGrad) => QueryKind::Grad,
             _ => unreachable!("query() entered without a query token"),
         };
         self.bump();
         let atom = self.atom()?;
         self.expect(&Tok::Dot, "`.`")?;
-        // `?prob` is executed via режим B (Phase 4); `?grad` still deferred.
-        if kind == QueryKind::Grad {
-            self.not_impl(span, "gradient queries (?grad)");
-        }
+        // `?prob` and `?grad` both execute via режим B (Phase 4 + gradient wiring).
         Ok(Item::new(ItemKind::Query(Query { atom, kind })))
     }
 
@@ -414,10 +413,8 @@ impl<'a> Parser<'a> {
         };
         self.bump();
         self.expect(&Tok::Dot, "`.`")?;
-        // @asp is executed via the reference solver (Phase 5); @terms deferred.
-        if pragma == Pragma::Terms {
-            self.not_impl(span, "@terms modules");
-        }
+        // @asp → reference solver (Phase 5); @terms → structural terms (spec §1.4).
+        let _ = span;
         Ok(Item::new(ItemKind::Pragma(pragma)))
     }
 
@@ -508,7 +505,26 @@ impl<'a> Parser<'a> {
             }) => {
                 let name = name.clone();
                 self.advance();
-                Ok(Term::Const { name })
+                // A constant immediately followed by `(` is a constructor term
+                // `functor(args…)` (`@terms`, spec §1.4); args are terms, recursive.
+                if self.eat(&Tok::LParen) {
+                    let mut args = Vec::new();
+                    if !self.at(&Tok::RParen) {
+                        loop {
+                            args.push(self.term()?);
+                            if !self.eat(&Tok::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&Tok::RParen, "`)`")?;
+                    Ok(Term::Compound {
+                        functor: name,
+                        args,
+                    })
+                } else {
+                    Ok(Term::Const { name })
+                }
             }
             Some(Spanned {
                 tok: Tok::IntLit(n),

@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use strata_ir::core::{CoreLiteral, CoreProgram, Semiring};
+use strata_ir::terms::TermTable;
 
 use crate::naive::{
     build_head, distinct_symbols, eval_aggregate_rule, is_aggregate_rule, negation_holds, unify,
@@ -44,16 +45,28 @@ pub fn run_semi_naive(prog: &CoreProgram, edb: &[(&str, Tuple, Ann)]) -> Result<
         .map(|p| (p.name.clone(), p.semiring))
         .collect();
     let universe = distinct_symbols(&db);
+    // Semi-naive is the non-`@terms` path (the CLI routes `@terms` to naive), so
+    // this table is a throwaway that the helpers thread but never populate.
+    let mut terms = TermTable::new(0);
 
     for k in 0..prog.num_strata {
         let is_trop = prog
             .rules_in_stratum(k)
             .any(|r| pred_sem.get(&r.head.pred) == Some(&Semiring::Trop));
-        saturate_stratum(prog, &mut db, k, &pred_stratum, is_trop, universe)?;
+        saturate_stratum(
+            prog,
+            &mut db,
+            k,
+            &pred_stratum,
+            is_trop,
+            universe,
+            &mut terms,
+        )?;
     }
     Ok(db)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn saturate_stratum(
     prog: &CoreProgram,
     db: &mut Db,
@@ -61,12 +74,13 @@ fn saturate_stratum(
     pred_stratum: &HashMap<String, u32>,
     is_trop: bool,
     universe: usize,
+    terms: &mut TermTable,
 ) -> Result<(), EvalError> {
     for rule in prog
         .rules_in_stratum(stratum)
         .filter(|r| is_aggregate_rule(r))
     {
-        eval_aggregate_rule(db, rule, pred_stratum, stratum)?;
+        eval_aggregate_rule(db, rule, pred_stratum, stratum, terms)?;
     }
 
     // IDB predicates of this stratum: the ones that grow here and carry deltas.
@@ -77,12 +91,12 @@ fn saturate_stratum(
         .collect();
 
     // Bootstrap: one full naive step seeds the initial delta.
-    let mut delta = apply_round(prog, db, stratum, pred_stratum, None)?;
+    let mut delta = apply_round(prog, db, stratum, pred_stratum, None, terms)?;
 
     let cap = universe + 2;
     let mut iters = 0usize;
     while delta.values().any(|v| !v.is_empty()) {
-        delta = apply_round(prog, db, stratum, pred_stratum, Some((&idb, &delta)))?;
+        delta = apply_round(prog, db, stratum, pred_stratum, Some((&idb, &delta)), terms)?;
         iters += 1;
         if is_trop && iters > cap {
             return Err(EvalError::NegativeWeightCycle);
@@ -96,12 +110,14 @@ fn saturate_stratum(
 /// `mode = None` is the bootstrap full step. `mode = Some((idb, delta))` is a
 /// delta round: each rule is evaluated once per recursive body position that has
 /// a non-empty delta, with that position ranging over the delta.
+#[allow(clippy::too_many_arguments)]
 fn apply_round(
     prog: &CoreProgram,
     db: &mut Db,
     stratum: u32,
     pred_stratum: &HashMap<String, u32>,
     mode: Option<(&HashSet<String>, &Delta)>,
+    terms: &mut TermTable,
 ) -> Result<Delta, EvalError> {
     let mut derived: Vec<(String, Tuple, Ann)> = Vec::new();
 
@@ -120,6 +136,7 @@ fn apply_round(
                 let mut solved = Vec::new();
                 solve(
                     db,
+                    terms,
                     &rule.body,
                     0,
                     &mut vec![None; rule.var_count as usize],
@@ -130,7 +147,9 @@ fn apply_round(
                     &mut solved,
                 )?;
                 for (b, acc) in solved {
-                    derived.push((rule.head.pred.clone(), build_head(&rule.head, &b)?, acc));
+                    if let Some(t) = build_head(&rule.head, &b, terms)? {
+                        derived.push((rule.head.pred.clone(), t, acc));
+                    }
                 }
             }
             Some((idb, delta)) => {
@@ -150,6 +169,7 @@ fn apply_round(
                     let mut solved = Vec::new();
                     solve(
                         db,
+                        terms,
                         &rule.body,
                         0,
                         &mut vec![None; rule.var_count as usize],
@@ -160,7 +180,9 @@ fn apply_round(
                         &mut solved,
                     )?;
                     for (b, acc) in solved {
-                        derived.push((rule.head.pred.clone(), build_head(&rule.head, &b)?, acc));
+                        if let Some(t) = build_head(&rule.head, &b, terms)? {
+                            derived.push((rule.head.pred.clone(), t, acc));
+                        }
                     }
                 }
             }
@@ -192,6 +214,7 @@ fn apply_round(
 #[allow(clippy::too_many_arguments)]
 fn solve(
     db: &Db,
+    terms: &mut TermTable,
     body: &[CoreLiteral],
     idx: usize,
     binding: &mut [Option<GroundVal>],
@@ -212,10 +235,11 @@ fn solve(
                 let (_, rows) = delta.unwrap();
                 for (tuple, row_ann) in rows {
                     let mut b = binding.to_vec();
-                    if unify(&atom.args, tuple, &mut b) {
+                    if unify(&atom.args, tuple, &mut b, terms) {
                         let new_acc = acc.otimes(*row_ann).map_err(EvalError::Overflow)?;
                         solve(
                             db,
+                            terms,
                             body,
                             idx + 1,
                             &mut b,
@@ -233,10 +257,11 @@ fn solve(
                     .ok_or_else(|| EvalError::UnknownPred(atom.pred.clone()))?;
                 for (tuple, &row_ann) in &rel.rows {
                     let mut b = binding.to_vec();
-                    if unify(&atom.args, tuple, &mut b) {
+                    if unify(&atom.args, tuple, &mut b, terms) {
                         let new_acc = acc.otimes(row_ann).map_err(EvalError::Overflow)?;
                         solve(
                             db,
+                            terms,
                             body,
                             idx + 1,
                             &mut b,
@@ -252,9 +277,10 @@ fn solve(
             Ok(())
         }
         CoreLiteral::Neg(atom) => {
-            if negation_holds(atom, binding, db, pred_stratum, cur_stratum)? {
+            if negation_holds(atom, binding, db, pred_stratum, cur_stratum, terms)? {
                 solve(
                     db,
+                    terms,
                     body,
                     idx + 1,
                     binding,

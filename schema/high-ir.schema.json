@@ -738,6 +738,40 @@
               ]
             }
           }
+        },
+        {
+          "description": "Constructor term `functor(args...)` (`@terms`, spec §1.4).",
+          "type": "object",
+          "required": [
+            "data",
+            "kind"
+          ],
+          "properties": {
+            "data": {
+              "type": "object",
+              "required": [
+                "args",
+                "functor"
+              ],
+              "properties": {
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/Term"
+                  }
+                },
+                "functor": {
+                  "type": "string"
+                }
+              }
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "compound"
+              ]
+            }
+          }
         }
       ]
     },

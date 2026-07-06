@@ -85,6 +85,12 @@ pub enum CoreTerm {
     Int { value: i64 },
     /// Aggregate over a variable slot (spec 1.3).
     Agg { op: AggOp, slot: u32 },
+    /// Constructor term `functor(args...)` (`@terms`, spec §1.4); args are
+    /// themselves terms (slots, constants, or nested compounds).
+    Compound {
+        functor: SymbolId,
+        args: Vec<CoreTerm>,
+    },
 }
 
 #[cfg(test)]

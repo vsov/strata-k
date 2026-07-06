@@ -6,9 +6,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::dict::SymbolId;
+use crate::terms::TermId;
 use crate::trop::Weight;
 
-/// A ground argument value: an interned constant or an integer literal.
+/// A ground argument value: an interned constant, an integer literal, or a
+/// hash-consed structural term (`@terms`, spec §1.4 — the id indexes a
+/// [`crate::terms::TermTable`]).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
@@ -16,6 +19,8 @@ use crate::trop::Weight;
 pub enum GroundVal {
     Sym(SymbolId),
     Int(i64),
+    /// A ground compound term, by its canonical id (`@terms`).
+    Term(TermId),
 }
 
 /// A ground EDB fact produced by lowering (CHECK-10) and consumed by eval.
