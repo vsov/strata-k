@@ -6,8 +6,14 @@ use strata_ir::dict::SymbolDict;
 use strata_ir::terms::TermTable;
 use strata_ir::trop::Weight;
 
-pub(crate) fn prob_line(p: f64, pred: &str, tuple: &[GroundVal], dict: &SymbolDict) -> String {
-    let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+pub(crate) fn prob_line(
+    p: f64,
+    pred: &str,
+    tuple: &[GroundVal],
+    dict: &SymbolDict,
+    terms: &TermTable,
+) -> String {
+    let args: Vec<String> = tuple.iter().map(|v| render_val_t(v, dict, terms)).collect();
     format!("{p} :: {pred}({})\n", args.join(", "))
 }
 
@@ -44,15 +50,6 @@ pub(crate) fn render_val_t(v: &GroundVal, dict: &SymbolDict, terms: &TermTable) 
                 inner.join(", ")
             )
         }
-    }
-}
-
-/// Term-free render (probabilistic / gradient paths never produce `@terms`).
-pub(crate) fn render_val(v: &GroundVal, dict: &SymbolDict) -> String {
-    match v {
-        GroundVal::Sym(id) => dict.resolve(*id).unwrap_or("?").to_string(),
-        GroundVal::Int(n) => n.to_string(),
-        GroundVal::Term(id) => format!("<term#{}>", id.0),
     }
 }
 

@@ -41,7 +41,8 @@ fn main() {
     // The forward pass runs here — the facts are computed, not pasted.
     attach_models(&mut program, &[&RiskModel]).expect("model attaches");
 
-    for (tuple, p, grad) in grad_query(&program, "investigate", &[None]).expect("grad") {
+    let answers = grad_query(&mut program, "investigate", &[None]).expect("grad");
+    for (tuple, p, grad) in answers {
         let firm = match tuple[0] {
             GroundVal::Sym(id) => program.dict.resolve(id).unwrap(),
             _ => unreachable!(),

@@ -80,39 +80,43 @@ pub fn eval(checked: &mut Checked) -> Result<Db, EvalError> {
 
 /// The exact marginal of every tuple of `pred` matching `pattern` (`None` = any
 /// position), by possible-world enumeration — the режим-B oracle. Bool-only,
-/// refused past 20 probabilistic facts (`2^n` worlds).
+/// refused past 20 probabilistic facts (`2^n` worlds). `@terms` programs work:
+/// worlds share the program's term table (hence `&mut Checked` — constructed
+/// terms intern into it).
 pub fn prob_query(
-    checked: &Checked,
+    checked: &mut Checked,
     pred: &str,
     pattern: &[Option<GroundVal>],
 ) -> Result<Vec<(Tuple, f64)>, ProbError> {
     let certain = certain_of(checked);
-    strata_eval::prob::query(&checked.core, &certain, &checked.prob_edb, pred, pattern)
+    let core = checked.core.clone();
+    let prob = checked.prob_edb.clone();
+    strata_eval::prob::query(&core, &certain, &prob, pred, pattern, &mut checked.terms)
 }
 
 /// [`prob_query`] plus the gradient of each marginal with respect to every
 /// probabilistic fact (`grad[i] = ∂P/∂p_i`, aligned with `checked.prob_edb`).
 pub fn grad_query(
-    checked: &Checked,
+    checked: &mut Checked,
     pred: &str,
     pattern: &[Option<GroundVal>],
 ) -> Result<Vec<(Tuple, f64, Vec<f64>)>, ProbError> {
     let certain = certain_of(checked);
-    strata_eval::prob::grad_query(&checked.core, &certain, &checked.prob_edb, pred, pattern)
+    let core = checked.core.clone();
+    let prob = checked.prob_edb.clone();
+    strata_eval::prob::grad_query(&core, &certain, &prob, pred, pattern, &mut checked.terms)
 }
 
 /// Provenance capture (`Prov`/`Prov_k` stage 1): every derived tuple's minimal
 /// proof DNF over the probabilistic facts, with `Prov_k` predicates pruned to
 /// their declared top-k. Compile a tuple's proofs with
 /// [`compile_exact`] and count with [`Circuit::wmc`]/[`Circuit::grad`].
-pub fn provenance(checked: &Checked) -> Result<ProvDb, ProvError> {
+pub fn provenance(checked: &mut Checked) -> Result<ProvDb, ProvError> {
     let certain = certain_of(checked);
-    run_prov(
-        &checked.core,
-        &certain,
-        &checked.prob_edb,
-        &prov_modes(checked),
-    )
+    let core = checked.core.clone();
+    let prob = checked.prob_edb.clone();
+    let modes = prov_modes(checked);
+    run_prov(&core, &certain, &prob, &modes, &mut checked.terms)
 }
 
 /// One ground atom of a stable model: predicate name and argument values.

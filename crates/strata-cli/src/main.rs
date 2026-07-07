@@ -12,7 +12,7 @@ use strata_eval::{run_semi_naive, run_terms, Ann, GroundVal};
 use strata_front::{format, parse, print_program};
 use strata_ir::core::CoreProgram;
 use strata_ir::dict::SymbolDict;
-use strata_ir::high::program::{ItemKind, Pragma, QueryKind};
+use strata_ir::high::program::QueryKind;
 use strata_ir::terms::TermTable;
 use strata_ir::value::GroundFact;
 
@@ -217,32 +217,23 @@ fn cmd_run(args: &[String]) -> Code {
     // predicates route through provenance capture + circuit compilation; with no
     // query, a plain run of a Prov program prints each fact's pedigree.
     // Otherwise a plain evaluation.
-    if !prov_modes(&checked).is_empty()
-        && prog
-            .items
-            .iter()
-            .any(|i| matches!(&i.node, ItemKind::Pragma(Pragma::Terms)))
-    {
-        eprintln!("strata: `@terms` with Prov/Prov_k is not supported in the reference");
-        return Code::Usage;
-    }
     let has_prob_queries = checked.queries.iter().any(|q| q.kind == QueryKind::Prob);
     let result = if grad_mode(&checked) || has_prob_queries {
         // Answer ?prob queries, then ?grad queries (a program may carry both).
         (|| {
             let mut combined = String::new();
             if has_prob_queries {
-                combined.push_str(&run_prob(&checked, &facts)?);
+                combined.push_str(&run_prob(&mut checked, &facts)?);
             }
             if grad_mode(&checked) {
-                combined.push_str(&run_grad(&checked, &facts)?);
+                combined.push_str(&run_grad(&mut checked, &facts)?);
             }
-            Ok(combined)
+            Ok(append_terms_status(combined, &checked.terms))
         })()
     } else if !prov_modes(&checked).is_empty() {
-        run_prov_display(&checked, &facts)
+        run_prov_display(&mut checked, &facts).map(|out| append_terms_status(out, &checked.terms))
     } else if prob_mode(&checked) {
-        run_prob(&checked, &facts)
+        run_prob(&mut checked, &facts).map(|out| append_terms_status(out, &checked.terms))
     } else {
         let semi = has_flag(args, "--semi-naive");
         run_program(
@@ -331,6 +322,20 @@ fn cmd_ir(args: &[String]) -> Code {
 
 // --- evaluation + output -----------------------------------------------------
 
+/// If the term table dropped derivations at its depth bound, the answers are a
+/// sound under-approximation — the режим-B outputs must say so, exactly like a
+/// plain run does (spec §1.4 `Sound[T]`).
+fn append_terms_status(mut out: String, terms: &TermTable) -> String {
+    if !terms.is_complete() {
+        out.push_str(&format!(
+            "% status: Sound (possibly incomplete) — {} derivation(s) dropped at depth bound {}\n",
+            terms.dropped(),
+            strata_ir::terms::DEFAULT_MAX_DEPTH
+        ));
+    }
+    out
+}
+
 /// Evaluate a Core-IR program over `facts`, rendering relations to canonical text.
 fn run_program(
     core: &CoreProgram,
@@ -346,7 +351,20 @@ fn run_program(
     // `terms` already holds the compound EDB facts (interned by the checker) and
     // outlives the database so constructed terms can be rendered; the depth bound
     // guarantees termination for `@terms` programs.
-    let db = if semi_naive {
+    // Semi-naive carries no depth bound: a term-constructing program would
+    // diverge under it, so `@terms` programs always take the naive engine
+    // (the bounded, sound-but-incomplete one), flag or no flag.
+    let program_uses_terms = !terms.is_empty()
+        || core.rules.iter().any(|r| {
+            use strata_ir::core::{CoreLiteral, CoreTerm};
+            let compound = |t: &CoreTerm| matches!(t, CoreTerm::Compound { .. });
+            r.head.args.iter().any(compound)
+                || r.body.iter().any(|l| {
+                    let (CoreLiteral::Pos(a) | CoreLiteral::Neg(a)) = l;
+                    a.args.iter().any(compound)
+                })
+        });
+    let db = if semi_naive && !program_uses_terms {
         run_semi_naive(core, &edb).map_err(|e| e.to_string())?
     } else {
         run_terms(core, &edb, terms).map_err(|e| e.to_string())?
@@ -426,9 +444,10 @@ path(X, Z) :- edge(X, Y), path(Y, Z).
 ";
         let (prog, diags) = parse(src);
         assert!(!diags.has_errors(), "{}", diags.render_text(src));
-        let checked = check_program(&prog).expect("check");
+        let mut checked = check_program(&prog).expect("check");
         assert!(prob_mode(&checked));
-        let out = run_prob(&checked, &checked.edb).expect("prob run");
+        let edb = checked.edb.clone();
+        let out = run_prob(&mut checked, &edb).expect("prob run");
         assert_eq!(out, "0.625 :: path(a, c)\n", "{out}");
     }
 
@@ -452,8 +471,9 @@ pred controls(firm, firm): Prov.
 controls(X, Y) :- owns(X, Y).
 controls(X, Z) :- owns(X, Y), owns(Y, Z).
 ";
-        let checked = checked_of(src);
-        let out = run_prov_display(&checked, &checked.edb).expect("prov display");
+        let mut checked = checked_of(src);
+        let edb = checked.edb.clone();
+        let out = run_prov_display(&mut checked, &edb).expect("prov display");
         // P = 0.9·0.8 + 0.3 − 0.9·0.8·0.3 = 0.804, both proofs listed.
         assert!(out.contains("0.804 :: controls(acme, target)"), "{out}");
         assert!(
@@ -491,8 +511,12 @@ answer(X, Y) :- path(X, Y).
 0.5 :: edge(b, c).
 ?prob answer(a, c).
 ";
-        let enumerated = run_prob(&checked_of(bool_src), &checked_of(bool_src).edb).unwrap();
-        let circuit = run_prob(&checked_of(prov_src), &checked_of(prov_src).edb).unwrap();
+        let mut b = checked_of(bool_src);
+        let b_edb = b.edb.clone();
+        let enumerated = run_prob(&mut b, &b_edb).unwrap();
+        let mut pv = checked_of(prov_src);
+        let pv_edb = pv.edb.clone();
+        let circuit = run_prob(&mut pv, &pv_edb).unwrap();
         assert_eq!(enumerated, "0.625 :: path(a, c)\n");
         assert_eq!(circuit, "0.625 :: answer(a, c)\n");
     }
@@ -511,8 +535,9 @@ reach(X, Z) :- edge(X, Y), reach(Y, Z).
 0.5 :: edge(b, c).
 ?prob reach(a, c).
 ";
-        let checked = checked_of(src);
-        let out = run_prob(&checked, &checked.edb).expect("prob run");
+        let mut checked = checked_of(src);
+        let edb = checked.edb.clone();
+        let out = run_prob(&mut checked, &edb).expect("prob run");
         assert_eq!(out, "0.5 :: reach(a, c)  (lower bound, top-1)\n", "{out}");
     }
 
@@ -528,8 +553,9 @@ investigate(X) :- flag(X).
 0.9 :: flag(acme).
 ?grad investigate(acme).
 ";
-        let checked = checked_of(src);
-        let out = run_grad(&checked, &checked.edb).expect("grad run");
+        let mut checked = checked_of(src);
+        let edb = checked.edb.clone();
+        let out = run_grad(&mut checked, &edb).expect("grad run");
         assert_eq!(
             out, "0.9 :: investigate(acme)\n  ∂/∂[0.9 :: flag(acme)] = 1  (→ model \"aml_gnn\")\n",
             "{out}"
@@ -548,8 +574,9 @@ node(a).
 0.5 :: flag(a).
 ok(X) :- node(X), not flag(X).
 ";
-        let checked = checked_of(src);
-        let out = run_prov_display(&checked, &checked.edb).expect("prov display");
+        let mut checked = checked_of(src);
+        let edb = checked.edb.clone();
+        let out = run_prov_display(&mut checked, &edb).expect("prov display");
         assert!(out.contains("0.5 :: ok(a)"), "{out}");
         assert!(out.contains("  ⇐ ¬[0.5 :: flag(a)]"), "{out}");
     }
@@ -570,8 +597,9 @@ ok(X) :- node(X), not flag(X).
             src.push_str(&format!("0.9 :: edge(n{i}, n{}).\n", i + 1));
         }
         src.push_str("?prob answer(n0, n25).\n");
-        let checked = checked_of(&src);
-        let out = run_prob(&checked, &checked.edb).expect("circuit path runs");
+        let mut checked = checked_of(&src);
+        let edb = checked.edb.clone();
+        let out = run_prob(&mut checked, &edb).expect("circuit path runs");
         let p: f64 = out
             .split_whitespace()
             .next()
@@ -581,8 +609,9 @@ ok(X) :- node(X), not flag(X).
         assert!((p - 0.9f64.powi(25)).abs() < 1e-12, "{out}");
         // The Bool enumeration oracle refuses the same query at this size.
         let bool_src = src.replace(": Prov", ": Bool");
-        let checked_bool = checked_of(&bool_src);
-        assert!(run_prob(&checked_bool, &checked_bool.edb).is_err());
+        let mut checked_bool = checked_of(&bool_src);
+        let bool_edb = checked_bool.edb.clone();
+        assert!(run_prob(&mut checked_bool, &bool_edb).is_err());
     }
 
     #[test]
@@ -611,6 +640,43 @@ nat(succ(X)) :- nat(X).
         assert!(out.contains("nat(succ(zero))"), "{out}");
         assert!(out.contains("nat(succ(succ(zero)))"), "{out}");
         // divergence hit the bound → sound-but-incomplete status line.
+        assert!(out.contains("Sound (possibly incomplete)"), "{out}");
+    }
+
+    #[test]
+    fn semi_naive_flag_on_terms_program_terminates_bounded() {
+        // Semi-naive has no depth bound; the runner must fall back to the
+        // bounded naive engine instead of diverging (this used to hang).
+        let src = "\
+@terms.
+domain elem.
+pred nat(elem): Bool.
+nat(zero).
+nat(succ(X)) :- nat(X).
+";
+        let out = eval_src(src, true);
+        assert!(out.contains("Sound (possibly incomplete)"), "{out}");
+    }
+
+    #[test]
+    fn regime_b_reports_the_depth_bound_status() {
+        // A ?prob answer over a depth-bounded @terms program is a sound
+        // under-approximation and must say so, like a plain run does.
+        let src = "\
+@terms.
+domain node.
+pred q(node): Bool.
+pred s(node): Bool.
+0.5 :: q(box(a)).
+s(X) :- q(box(X)).
+s(succ(X)) :- s(X).
+?prob s(a).
+";
+        let mut checked = checked_of(src);
+        let edb = checked.edb.clone();
+        let out = run_prob(&mut checked, &edb).expect("prob run");
+        let out = append_terms_status(out, &checked.terms);
+        assert!(out.contains("0.5 :: s(a)"), "{out}");
         assert!(out.contains("Sound (possibly incomplete)"), "{out}");
     }
 
@@ -667,9 +733,10 @@ path(X, Z) :- edge(X, Y), path(Y, Z).
 ";
         let (prog, diags) = parse(src);
         assert!(!diags.has_errors(), "{}", diags.render_text(src));
-        let checked = check_program(&prog).expect("check");
+        let mut checked = check_program(&prog).expect("check");
         assert!(grad_mode(&checked));
-        let out = run_grad(&checked, &checked.edb).expect("grad run");
+        let edb = checked.edb.clone();
+        let out = run_grad(&mut checked, &edb).expect("grad run");
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "0.625 :: path(a, c)", "{out}");
         // parse "  ∂/∂[…] = <value>" and check the three gradients.
@@ -704,7 +771,11 @@ alert(F) :- flag(F, high).
             checked.neural,
             vec![("flag".to_string(), "aml_gnn".to_string())]
         );
-        let out = run_grad(&checked, &checked.edb).expect("neural grad run");
+        let out = {
+            let mut checked = checked;
+            let edb = checked.edb.clone();
+            run_grad(&mut checked, &edb).expect("neural grad run")
+        };
         // P(alert(acme)) = P(flag(acme,high)) = 0.8; ∂/∂high = 1, ∂/∂low = 0.
         assert!(out.contains(":: alert(acme)"), "{out}");
         assert!(out.contains("flag(acme, high)] = 1"), "{out}");
@@ -763,9 +834,9 @@ b() :- not a().
         load_inputs(&prog, &mut checked, dir).expect("inputs load");
         let facts = checked.edb.clone();
         if grad_mode(&checked) {
-            run_grad(&checked, &facts).expect("grad")
+            run_grad(&mut checked, &facts).expect("grad")
         } else if prob_mode(&checked) {
-            run_prob(&checked, &facts).expect("prob")
+            run_prob(&mut checked, &facts).expect("prob")
         } else {
             run_program(
                 &checked.core,

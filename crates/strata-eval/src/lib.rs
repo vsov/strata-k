@@ -7,6 +7,7 @@
 //! (режим A) in Phase 0 (D5, D6).
 
 pub mod dred;
+pub mod incprov;
 pub mod naive;
 pub mod prob;
 pub mod provenance;
@@ -14,6 +15,7 @@ pub mod seminaive;
 pub mod store;
 pub mod value;
 
+pub use incprov::IncProv;
 pub use naive::{run, run_terms, EvalError};
 pub use prob::{marginals, ProbError};
 pub use provenance::{run_prov, run_prov_with_budget, ProvDb, ProvError, ProvMode};

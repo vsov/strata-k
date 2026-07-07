@@ -10,7 +10,9 @@ use strata_ir::high::sig::Annotation;
 use strata_ir::value::GroundFact;
 use strata_prob::compile_exact;
 
-use crate::render::{prob_line, render_val};
+use strata_ir::terms::TermTable;
+
+use crate::render::{prob_line, render_val_t};
 
 // --- Prov / Prov_k (провенанс: capture → compile → WMC) ----------------------
 
@@ -36,9 +38,10 @@ pub(crate) fn prov_modes(checked: &Checked) -> HashMap<String, ProvMode> {
 }
 
 /// Run provenance capture at most once per invocation (queries share it).
+/// Constructed compound terms intern into `checked.terms` (hence `&mut`).
 pub(crate) fn capture_once<'a>(
     slot: &'a mut Option<ProvDb>,
-    checked: &Checked,
+    checked: &mut Checked,
     certain_facts: &[GroundFact],
 ) -> Result<&'a ProvDb, String> {
     if slot.is_none() {
@@ -46,13 +49,11 @@ pub(crate) fn capture_once<'a>(
             .iter()
             .map(|f| (f.pred.clone(), f.args.clone()))
             .collect();
-        let dbp = run_prov(
-            &checked.core,
-            &certain,
-            &checked.prob_edb,
-            &prov_modes(checked),
-        )
-        .map_err(|e| e.to_string())?;
+        let core = checked.core.clone();
+        let prob = checked.prob_edb.clone();
+        let modes = prov_modes(checked);
+        let dbp = run_prov(&core, &certain, &prob, &modes, &mut checked.terms)
+            .map_err(|e| e.to_string())?;
         *slot = Some(dbp);
     }
     Ok(slot.as_ref().unwrap())
@@ -65,9 +66,10 @@ pub(crate) fn prov_prob_line(
     pred: &str,
     tuple: &[GroundVal],
     dict: &SymbolDict,
+    terms: &TermTable,
     ann: &Annotation,
 ) -> String {
-    let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+    let args: Vec<String> = tuple.iter().map(|v| render_val_t(v, dict, terms)).collect();
     match ann {
         Annotation::ProvK { k } => {
             format!(
@@ -82,7 +84,7 @@ pub(crate) fn prov_prob_line(
 /// One pedigree line per proof: the conjunction of the probabilistic facts a
 /// derivation rests on (`⊤` = rests on certain facts only; `¬[...]` = the
 /// stratified absence of a soft fact — a dual literal).
-fn render_proof(proof: &[i64], checked: &Checked, dict: &SymbolDict) -> String {
+fn render_proof(proof: &[i64], checked: &Checked, dict: &SymbolDict, terms: &TermTable) -> String {
     if proof.is_empty() {
         return "⊤".to_string();
     }
@@ -92,7 +94,7 @@ fn render_proof(proof: &[i64], checked: &Checked, dict: &SymbolDict) -> String {
         .iter()
         .map(|&l| {
             let (pred, tuple, pw) = &checked.prob_edb[(l.abs() - 1) as usize];
-            let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+            let args: Vec<String> = tuple.iter().map(|v| render_val_t(v, dict, terms)).collect();
             let fact = format!("[{pw} :: {pred}({})]", args.join(", "));
             if l < 0 {
                 format!("¬{fact}")
@@ -108,12 +110,13 @@ fn render_proof(proof: &[i64], checked: &Checked, dict: &SymbolDict) -> String {
 /// tuples with their marginals; provenance-annotated predicates additionally
 /// show their pedigree, one `⇐` line per captured proof.
 pub(crate) fn run_prov_display(
-    checked: &Checked,
+    checked: &mut Checked,
     certain_facts: &[GroundFact],
 ) -> Result<String, String> {
     let mut captured = None;
     let dbp = capture_once(&mut captured, checked, certain_facts)?;
     let dict = &checked.dict;
+    let terms = &checked.terms;
     let probs: Vec<f64> = checked.prob_edb.iter().map(|x| x.2).collect();
     let modes = prov_modes(checked);
 
@@ -125,20 +128,24 @@ pub(crate) fn run_prov_display(
             let (_, proofs) = matches.iter().find(|(t, _)| t == tuple).unwrap();
             let certain = proofs.iter().any(|p| p.is_empty());
             if certain {
-                let args: Vec<String> = tuple.iter().map(|v| render_val(v, dict)).collect();
+                let args: Vec<String> =
+                    tuple.iter().map(|v| render_val_t(v, dict, terms)).collect();
                 out.push_str(&format!("{pred}({})\n", args.join(", ")));
             } else {
                 let p = compile_exact(proofs, probs.len())
                     .map_err(|e| e.to_string())?
                     .wmc(&probs);
                 match ann {
-                    Some(a) => out.push_str(&prov_prob_line(p, pred, tuple, dict, a)),
-                    None => out.push_str(&prob_line(p, pred, tuple, dict)),
+                    Some(a) => out.push_str(&prov_prob_line(p, pred, tuple, dict, terms, a)),
+                    None => out.push_str(&prob_line(p, pred, tuple, dict, terms)),
                 }
             }
             if ann.is_some() {
                 for proof in proofs {
-                    out.push_str(&format!("  ⇐ {}\n", render_proof(proof, checked, dict)));
+                    out.push_str(&format!(
+                        "  ⇐ {}\n",
+                        render_proof(proof, checked, dict, terms)
+                    ));
                 }
             }
         }

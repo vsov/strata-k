@@ -36,7 +36,7 @@ fn diagnostics_come_back_typed() {
 
 #[test]
 fn prob_and_grad_queries_match_the_known_marginal() {
-    let p = compile(
+    let mut p = compile(
         "pred edge(node, node): Bool.\n\
          pred path(node, node): Bool.\n\
          path(X, Y) :- edge(X, Y).\n\
@@ -45,16 +45,16 @@ fn prob_and_grad_queries_match_the_known_marginal() {
     )
     .expect("checks");
     let pat = [Some(sym(&p.dict, "a")), Some(sym(&p.dict, "c"))];
-    let ans = prob_query(&p, "path", &pat).expect("prob");
+    let ans = prob_query(&mut p, "path", &pat).expect("prob");
     assert_eq!(ans.len(), 1);
     assert!((ans[0].1 - 0.625).abs() < 1e-12);
-    let g = grad_query(&p, "path", &pat).expect("grad");
+    let g = grad_query(&mut p, "path", &pat).expect("grad");
     assert!((g[0].2[0] - 0.75).abs() < 1e-12, "∂/∂ direct edge");
 }
 
 #[test]
 fn provenance_pedigree_and_circuit_marginal() {
-    let p = compile(
+    let mut p = compile(
         "domain firm.\n\
          pred owns(firm, firm): Bool.\n\
          pred controls(firm, firm): Prov.\n\
@@ -65,7 +65,7 @@ fn provenance_pedigree_and_circuit_marginal() {
          controls(X, Z) :- owns(X, Y), owns(Y, Z).\n",
     )
     .expect("checks");
-    let dbp = provenance(&p).expect("capture");
+    let dbp = provenance(&mut p).expect("capture");
     let target: Tuple = vec![sym(&p.dict, "acme"), sym(&p.dict, "target")];
     let hits = dbp.query("controls", &[Some(target[0]), Some(target[1])]);
     assert_eq!(hits.len(), 1);
@@ -90,42 +90,49 @@ fn asp_models_enumerates_stable_models() {
 }
 
 #[test]
-fn terms_programs_get_a_typed_regime_b_refusal_not_a_panic() {
-    // compile() accepts @terms + soft facts; the режим-B paths must refuse
-    // with a typed error (per-world term interning would mis-compare), never
-    // panic on an out-of-bounds term table.
-    let p = compile(
-        "@terms.
-         domain node.
-         pred q(node): Prov.
-         pred r(node): Prov.
-         0.5 :: q(f(a)).
-         r(X) :- q(f(X)).
-",
+fn terms_work_in_regime_b_with_one_shared_table() {
+    // Cross-world term identity: two independent soft facts each construct
+    // f(a) in a head. Correct only if f(a) is ONE term id in every world:
+    // P(s(f(a))) = 1 − 0.5·0.5 = 0.75. (Per-world throwaway tables — the old
+    // panic-then-refusal — would split or crash.)
+    let mut p = compile(
+        "@terms.\n\
+         domain node.\n\
+         pred q(node): Bool.\n\
+         pred t(node): Bool.\n\
+         pred s(node): Bool.\n\
+         0.5 :: q(a).\n\
+         0.5 :: t(a).\n\
+         s(f(X)) :- q(X).\n\
+         s(f(X)) :- t(X).\n",
     )
     .expect("checks");
-    assert!(matches!(
-        provenance(&p),
-        Err(strata_k::ProvError::TermsUnsupported)
-    ));
-    let p2 = compile(
-        "@terms.
-         domain node.
-         pred q(node): Bool.
-         pred r(node): Bool.
-         0.5 :: q(f(a)).
-         r(X) :- q(f(X)).
-",
+    let ans = prob_query(&mut p, "s", &[None]).expect("terms + enumeration");
+    assert_eq!(ans.len(), 1);
+    assert!((ans[0].1 - 0.75).abs() < 1e-12, "got {}", ans[0].1);
+
+    // Provenance capture threads the same table: two one-leaf proofs, exact
+    // WMC agrees with enumeration.
+    let mut p2 = compile(
+        "@terms.\n\
+         domain node.\n\
+         pred q(node): Bool.\n\
+         pred t(node): Bool.\n\
+         pred s(node): Prov.\n\
+         0.5 :: q(a).\n\
+         0.5 :: t(a).\n\
+         s(f(X)) :- q(X).\n\
+         s(f(X)) :- t(X).\n",
     )
     .expect("checks");
-    assert!(matches!(
-        prob_query(&p2, "r", &[None]),
-        Err(strata_k::ProbError::TermsUnsupported)
-    ));
-    assert!(matches!(
-        grad_query(&p2, "r", &[None]),
-        Err(strata_k::ProbError::TermsUnsupported)
-    ));
+    let dbp = provenance(&mut p2).expect("capture over terms");
+    let hits = dbp.query("s", &[None]);
+    assert_eq!(hits.len(), 1);
+    let (_, proofs) = &hits[0];
+    assert_eq!(proofs.len(), 2, "two independent one-leaf proofs");
+    let probs: Vec<f64> = p2.prob_edb.iter().map(|x| x.2).collect();
+    let c = strata_k::compile_exact(proofs, probs.len()).expect("compiles");
+    assert!((c.wmc(&probs) - 0.75).abs() < 1e-12);
 }
 
 #[test]
@@ -243,7 +250,7 @@ fn in_process_model_computes_the_soft_facts() {
     assert_eq!(p.prob_edb.len(), 2, "the forward pass supplied the facts");
 
     let pat = [Some(sym(&p.dict, "acme"))];
-    let ans = grad_query(&p, "investigate", &pat).expect("grad");
+    let ans = grad_query(&mut p, "investigate", &pat).expect("grad");
     assert_eq!(ans.len(), 1);
     assert!(
         (ans[0].1 - 0.9).abs() < 1e-12,

@@ -17,8 +17,9 @@
 use std::collections::HashMap;
 
 use strata_ir::core::{CoreProgram, Semiring};
+use strata_ir::terms::TermTable;
 
-use crate::naive::{run, EvalError};
+use crate::naive::{run_terms, EvalError};
 use crate::value::{Ann, GroundVal};
 
 pub type Tuple = Vec<GroundVal>;
@@ -32,11 +33,6 @@ pub const MAX_PROB_FACTS: usize = 20;
 pub enum ProbError {
     /// More probabilistic facts than exact enumeration allows (spec: #P-hard).
     TooManyProbFacts(usize),
-    /// The program uses `@terms` compound values. Enumerating worlds would
-    /// intern constructed terms into per-world throwaway tables, so equal terms
-    /// in different worlds would not compare equal — the marginals would be
-    /// silently wrong. Refused instead.
-    TermsUnsupported,
     /// A probability outside [0, 1].
     BadProbability(f64),
     /// The deductive part must be Bool (probabilities annotate Bool relations).
@@ -54,11 +50,6 @@ impl std::fmt::Display for ProbError {
                  (exact режим B is #P-hard; use knowledge compilation / top-k)"
             ),
             ProbError::BadProbability(p) => write!(f, "probability {p} is outside [0, 1]"),
-            ProbError::TermsUnsupported => write!(
-                f,
-                "режим B over `@terms` programs is not supported in the reference \
-                 (per-world term interning would mis-compare constructed terms)"
-            ),
             ProbError::NotBool(p) => write!(f, "predicate `{p}` is not Bool; режим B is Bool-only"),
             ProbError::Eval(e) => write!(f, "{e}"),
         }
@@ -75,6 +66,7 @@ pub fn marginals(
     core: &CoreProgram,
     certain: &[(String, Tuple)],
     prob: &[(String, Tuple, f64)],
+    terms: &mut TermTable,
 ) -> Result<Marginals, ProbError> {
     if let Some(p) = core
         .predicates
@@ -92,10 +84,6 @@ pub fn marginals(
             return Err(ProbError::BadProbability(p));
         }
     }
-    if uses_terms(core, certain, prob) {
-        return Err(ProbError::TermsUnsupported);
-    }
-
     let mut acc: Marginals = HashMap::new();
     // Enumerate all 2^n worlds via a bitmask over the probabilistic facts.
     for mask in 0u32..(1u32 << n) {
@@ -119,7 +107,10 @@ pub fn marginals(
             }
         }
 
-        let db = run(core, &edb).map_err(ProbError::Eval)?;
+        // One shared table across worlds: a term constructed in any world has
+        // one id, so tuples from different worlds compare equal (the
+        // correctness condition per-world throwaway tables would break).
+        let db = run_terms(core, &edb, terms).map_err(ProbError::Eval)?;
         for pred in db.predicates() {
             let rel = db.relation(pred).unwrap();
             let entry = acc.entry(pred.clone()).or_default();
@@ -139,8 +130,9 @@ pub fn query(
     prob: &[(String, Tuple, f64)],
     pred: &str,
     pattern: &[Option<GroundVal>],
+    terms: &mut TermTable,
 ) -> Result<Vec<(Tuple, f64)>, ProbError> {
-    let all = marginals(core, certain, prob)?;
+    let all = marginals(core, certain, prob, terms)?;
     let mut out: Vec<(Tuple, f64)> = all
         .get(pred)
         .into_iter()
@@ -169,6 +161,7 @@ pub fn grad_query(
     prob: &[(String, Tuple, f64)],
     pred: &str,
     pattern: &[Option<GroundVal>],
+    terms: &mut TermTable,
 ) -> Result<Vec<(Tuple, f64, Vec<f64>)>, ProbError> {
     if let Some(p) = core
         .predicates
@@ -186,10 +179,6 @@ pub fn grad_query(
             return Err(ProbError::BadProbability(p));
         }
     }
-    if uses_terms(core, certain, prob) {
-        return Err(ProbError::TermsUnsupported);
-    }
-
     let mut pacc: HashMap<Tuple, f64> = HashMap::new();
     let mut gacc: HashMap<Tuple, Vec<f64>> = HashMap::new();
 
@@ -235,7 +224,7 @@ pub fn grad_query(
                 edb.push((pr.as_str(), t.clone(), Ann::Unit));
             }
         }
-        let db = run(core, &edb).map_err(ProbError::Eval)?;
+        let db = run_terms(core, &edb, terms).map_err(ProbError::Eval)?;
         if let Some(rel) = db.relation(pred) {
             for tuple in rel.rows.keys() {
                 *pacc.entry(tuple.clone()).or_insert(0.0) += w;
@@ -259,35 +248,6 @@ pub fn grad_query(
     Ok(out)
 }
 
-/// Does the program touch `@terms` at all — compound terms in rules, or
-/// compound values in the (certain or probabilistic) EDB?
-pub(crate) fn uses_terms(
-    core: &CoreProgram,
-    certain: &[(String, Tuple)],
-    prob: &[(String, Tuple, f64)],
-) -> bool {
-    use strata_ir::core::{CoreLiteral, CoreTerm};
-    fn term_has_compound(t: &CoreTerm) -> bool {
-        // A nested compound is only reachable through an outer one, so the
-        // top-level check suffices.
-        matches!(t, CoreTerm::Compound { .. })
-    }
-    let rule_terms = core.rules.iter().any(|r| {
-        r.head.args.iter().any(term_has_compound)
-            || r.body.iter().any(|l| {
-                let (CoreLiteral::Pos(a) | CoreLiteral::Neg(a)) = l;
-                a.args.iter().any(term_has_compound)
-            })
-    });
-    rule_terms
-        || certain
-            .iter()
-            .any(|(_, t)| t.iter().any(|v| matches!(v, GroundVal::Term(_))))
-        || prob
-            .iter()
-            .any(|(_, t, _)| t.iter().any(|v| matches!(v, GroundVal::Term(_))))
-}
-
 fn matches(tuple: &[GroundVal], pattern: &[Option<GroundVal>]) -> bool {
     tuple.len() == pattern.len()
         && tuple
@@ -301,6 +261,10 @@ mod tests {
     use super::*;
     use strata_ir::core::{CoreAtom, CoreLiteral, CorePred, CoreRule, CoreTerm};
     use strata_ir::dict::SymbolId;
+
+    fn t0() -> TermTable {
+        TermTable::new(0)
+    }
 
     fn v(slot: u32) -> CoreTerm {
         CoreTerm::Var { slot }
@@ -351,7 +315,7 @@ mod tests {
 
     fn prob_of(core: &CoreProgram, prob: &[(String, Tuple, f64)], t: &[u32]) -> f64 {
         let pat: Vec<Option<GroundVal>> = t.iter().map(|&c| Some(sym(c))).collect();
-        query(core, &[], prob, "path", &pat)
+        query(core, &[], prob, "path", &pat, &mut TermTable::new(0))
             .unwrap()
             .first()
             .map(|x| x.1)
@@ -384,7 +348,7 @@ mod tests {
         let core = tc_program();
         let prob = vec![edge(0, 2, 0.5), edge(0, 1, 0.6), edge(1, 2, 0.7)];
         let pat = [Some(sym(0)), Some(sym(2))];
-        let res = grad_query(&core, &[], &prob, "path", &pat).unwrap();
+        let res = grad_query(&core, &[], &prob, "path", &pat, &mut t0()).unwrap();
         let (_, p, g) = &res[0];
         // sanity: probability matches the marginal query.
         assert!((p - prob_of(&core, &prob, &[0, 2])).abs() < 1e-12);
@@ -409,7 +373,15 @@ mod tests {
         // p_i ∈ {0,1}: the sibling-product form must still be finite/exact.
         let core = tc_program();
         let prob = vec![edge(0, 1, 1.0), edge(1, 2, 0.4)];
-        let res = grad_query(&core, &[], &prob, "path", &[Some(sym(0)), Some(sym(2))]).unwrap();
+        let res = grad_query(
+            &core,
+            &[],
+            &prob,
+            "path",
+            &[Some(sym(0)), Some(sym(2))],
+            &mut t0(),
+        )
+        .unwrap();
         let (_, p, g) = &res[0];
         // P(path(a,c)) = P(edge(a,b))·P(edge(b,c)) = 1·0.4 = 0.4.
         assert!((p - 0.4).abs() < 1e-12);
@@ -425,7 +397,7 @@ mod tests {
             .map(|i| edge(i, i + 1, 0.5))
             .collect();
         assert!(matches!(
-            marginals(&core, &[], &prob),
+            marginals(&core, &[], &prob, &mut t0()),
             Err(ProbError::TooManyProbFacts(_))
         ));
     }

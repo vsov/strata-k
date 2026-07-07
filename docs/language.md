@@ -133,8 +133,12 @@ stake_count(X, count<Y>) :- owns(X, Y).
 outdeg(X, count<Y>)      :- edge(X, Y).
 ```
 
-The aggregate functions are `min`, `max`, `sum`, and `count` (`prob_or` is
-reserved for a later phase). The aggregated variable (`Y` above) is bound by the
+The aggregate functions are `min`, `max`, `sum`, and `count`. `prob_or`
+remains **reserved, deliberately**: the specification assigns it no semantics,
+and the language's constitution is *no arithmetic without a semantics* — a
+noisy-or would also need a float-valued column, which `GroundVal` does not
+have. It parses (the grammar is complete) and is refused at evaluation. If a
+future revision gives it a semantics, the reservation is where it lands. The aggregated variable (`Y` above) is bound by the
 body and consumed by the aggregate; the remaining head variables are the group
 key. Aggregation is **non-recursive**: an aggregate reads only from lower strata,
 like negation.
@@ -258,12 +262,22 @@ offers `Prov_k(k)` — keep the `k` best proofs per tuple (bare `Prov_k` means
 as one — `0.5 :: reach(a, c)  (lower bound, top-1)` — monotone in `k` and equal
 to exact once `k` covers every proof.
 
-What capture refuses, loudly, rather than approximate silently: negating a
-tuple with *derived* soft provenance (negating a soft **EDB fact** is fine and
-shows in the pedigree as a dual literal `¬[...]`), aggregating over
-soft-supported tuples, and `@terms` combined with provenance. The exact
-enumeration oracle continues to cover the first two world-by-world on `Bool`
-predicates, and the two pipelines are differentially tested against each other.
+Stratified negation over soft provenance — derived or not — is exact: capture
+takes the **complement** of the negated tuple's proof DNF (dual literals,
+`x·x̄ = 0`, absorption), and the pedigree shows the absences as `¬[...]`
+conjuncts. `@terms` programs work across the whole режим-B surface: one term
+table is shared across worlds and through capture, so a constructed `f(a)` is
+the same value everywhere. What capture still refuses, loudly: aggregating
+over soft-supported tuples (correlated counting). The exact enumeration
+oracle covers that world-by-world on `Bool` predicates, and the two pipelines
+are differentially fuzzed against each other — including negation-over-soft
+and `@terms` families.
+
+Soft facts can also arrive and leave *incrementally*: the `strata-k` /
+`strata-eval` `IncProv` maintainer updates the captured proofs without
+recapturing (insert = resume the monotone fixpoint; delete = drop the leaf's
+proofs — minimal leaf-free proofs are already present), for positive programs;
+negation falls back to recapture, and every step is fuzz-checked against one.
 
 Proof growth is budgeted, because real data can be exponential without asking
 permission: exact capture refuses a tuple whose minimal-proof set passes

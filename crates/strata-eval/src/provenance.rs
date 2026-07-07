@@ -16,12 +16,12 @@
 //! total order, so merging is order-invariant, spec §2.2). The kept subset
 //! makes any downstream WMC a guaranteed lower bound.
 //!
-//! Honest refusals (the enumeration oracle in [`crate::prob`] still covers
-//! these exactly, world by world):
-//! - negation of a tuple with *derived* soft provenance (the complement of a
-//!   general DNF explodes; negating soft EDB facts — all-singleton DNFs —
-//!   is supported via dual literals),
-//! - aggregation over soft-supported bindings (counting correlated worlds).
+//! Stratified negation over soft provenance takes the complement of the
+//! negated tuple's proof DNF (dual literals distributed, `x·x̄ = 0`,
+//! absorption) — exact, budgeted like every proof set. The one remaining
+//! honest refusal: aggregation over soft-supported bindings (counting
+//! correlated worlds); the enumeration oracle in [`crate::prob`] covers it
+//! world by world.
 //!
 //! Compilation (stage 2) and WMC/gradients (stage 3) live in `strata-prob`;
 //! this module only captures. Its differential test cross-checks the captured
@@ -62,20 +62,12 @@ pub enum ProvError {
     NotBool(String),
     /// A probability outside [0, 1].
     BadProbability(f64),
-    /// `not p(...)` where `p`'s matching tuple has derived soft provenance —
-    /// complementing a general DNF is refused; only soft *EDB facts* (and
-    /// certain tuples) may be negated. The enumeration path remains exact.
-    SoftNegation(String),
     /// An aggregate over soft-supported bindings — correlated counting is
     /// refused; aggregates must rest on certain tuples only.
     SoftAggregate(String),
     /// A tuple's minimal proof antichain exceeded the capture budget; exact
     /// provenance refuses the blow-up (`Prov_k` is the declared alternative).
     ProofBudget { pred: String, bound: usize },
-    /// The program uses `@terms` compound values — capture evaluates against a
-    /// throwaway term table, so it refuses rather than mis-unify (same posture
-    /// as the enumeration path).
-    TermsUnsupported,
     /// The underlying Bool machinery failed (unknown predicate, safety, ...).
     Eval(EvalError),
 }
@@ -87,12 +79,6 @@ impl std::fmt::Display for ProvError {
                 write!(f, "predicate `{p}` is not Bool-based; режим B is Bool-only")
             }
             ProvError::BadProbability(p) => write!(f, "probability {p} is outside [0, 1]"),
-            ProvError::SoftNegation(p) => write!(
-                f,
-                "`not {p}(...)` over derived soft provenance is not supported by capture; \
-                 negate certain tuples or soft EDB facts only (or use the Bool \
-                 enumeration path)"
-            ),
             ProvError::SoftAggregate(p) => write!(
                 f,
                 "aggregate over soft-supported `{p}` tuples is not supported by capture; \
@@ -103,10 +89,6 @@ impl std::fmt::Display for ProvError {
                 "`{pred}` accumulated more than {bound} minimal proofs for one tuple; \
                  exact provenance refuses the blow-up — annotate it `Prov_k(k)` for a \
                  declared lower bound"
-            ),
-            ProvError::TermsUnsupported => write!(
-                f,
-                "provenance capture over `@terms` programs is not supported in the reference"
             ),
             ProvError::Eval(e) => write!(f, "{e}"),
         }
@@ -151,7 +133,7 @@ impl ProvDb {
 
 /// Insert `proof` into `set` keeping it absorption-minimal. Returns whether the
 /// set changed.
-fn insert_minimal(set: &mut ProofSet, proof: Proof) -> bool {
+pub(crate) fn insert_minimal(set: &mut ProofSet, proof: Proof) -> bool {
     if set.iter().any(|kept| kept.is_subset(&proof)) {
         return false;
     }
@@ -175,6 +157,24 @@ fn product(acc: &ProofSet, other: &ProofSet) -> ProofSet {
     out
 }
 
+/// The complement `¬(p₁ ∨ ... ∨ pₙ)` of a proof DNF, as a proof DNF:
+/// distribute `⊗ᵢ ¬pᵢ` where `¬(l₁ ∧ ... ∧ lₖ)` is the DNF of the negated
+/// literals `{¬l₁} ∨ ... ∨ {¬lₖ}` (dual literals, `x·x̄ = 0` drops
+/// contradictions, absorption keeps the antichain minimal). Worst case is
+/// exponential — the same honest bill as everywhere in режим B — so the
+/// per-tuple proof budget applies here too.
+fn complement(proofs: &ProofSet, max_proofs: usize) -> Option<ProofSet> {
+    let mut acc = ProofSet::from([Proof::new()]);
+    for p in proofs {
+        let negated: ProofSet = p.iter().map(|&l| Proof::from([-l])).collect();
+        acc = product(&acc, &negated);
+        if acc.len() > max_proofs {
+            return None; // budget: the caller reports ProofBudget
+        }
+    }
+    Some(acc)
+}
+
 /// The weight of one proof under the leaf probabilities.
 fn proof_weight(proof: &Proof, prob: &[(String, Tuple, f64)]) -> f64 {
     proof
@@ -192,7 +192,7 @@ fn proof_weight(proof: &Proof, prob: &[(String, Tuple, f64)]) -> f64 {
 
 /// Prune a tuple's proofs to the k best by (weight desc, literals asc) — the
 /// same total order as `strata_prob::top_k_signed`, so the two agree.
-fn prune_top_k(set: &mut ProofSet, k: usize, prob: &[(String, Tuple, f64)]) {
+pub(crate) fn prune_top_k(set: &mut ProofSet, k: usize, prob: &[(String, Tuple, f64)]) {
     if set.len() <= k {
         return;
     }
@@ -217,8 +217,9 @@ pub fn run_prov(
     certain: &[(String, Tuple)],
     prob: &[(String, Tuple, f64)],
     modes: &HashMap<String, ProvMode>,
+    terms: &mut TermTable,
 ) -> Result<ProvDb, ProvError> {
-    run_prov_with_budget(core, certain, prob, modes, MAX_PROOFS_PER_TUPLE)
+    run_prov_with_budget(core, certain, prob, modes, MAX_PROOFS_PER_TUPLE, terms)
 }
 
 /// [`run_prov`] with an explicit per-tuple proof budget (tests use tiny ones).
@@ -228,6 +229,7 @@ pub fn run_prov_with_budget(
     prob: &[(String, Tuple, f64)],
     modes: &HashMap<String, ProvMode>,
     max_proofs_per_tuple: usize,
+    terms: &mut TermTable,
 ) -> Result<ProvDb, ProvError> {
     if let Some(p) = core
         .predicates
@@ -240,9 +242,6 @@ pub fn run_prov_with_budget(
         if !(0.0..=1.0).contains(&p) {
             return Err(ProvError::BadProbability(p));
         }
-    }
-    if crate::prob::uses_terms(core, certain, prob) {
-        return Err(ProvError::TermsUnsupported);
     }
 
     let mut db = ProvDb::default();
@@ -277,14 +276,26 @@ pub fn run_prov_with_budget(
         insert_minimal(set, Proof::from([(i as i64) + 1]));
     }
 
+    saturate(&mut db, core, prob, modes, max_proofs_per_tuple, terms)?;
+    Ok(db)
+}
+
+/// Run the capture fixpoint over `db`'s current contents until stable —
+/// the body of [`run_prov`], reusable by the incremental maintainer to resume
+/// after inserting a leaf or repopulate top-k sets after deleting one.
+pub(crate) fn saturate(
+    db: &mut ProvDb,
+    core: &CoreProgram,
+    prob: &[(String, Tuple, f64)],
+    modes: &HashMap<String, ProvMode>,
+    max_proofs_per_tuple: usize,
+    terms: &mut TermTable,
+) -> Result<(), ProvError> {
     let pred_stratum: HashMap<String, u32> = core
         .predicates
         .iter()
         .map(|p| (p.name.clone(), p.stratum))
         .collect();
-    // Capture never builds compound terms; an empty table only *reads* existing
-    // `GroundVal::Term` values during unification.
-    let terms = TermTable::new(0);
 
     for stratum in 0..core.num_strata {
         // Aggregates first, once (their bodies are strictly lower — CHECK-9).
@@ -292,7 +303,7 @@ pub fn run_prov_with_budget(
             .rules_in_stratum(stratum)
             .filter(|r| is_aggregate_rule(r))
         {
-            eval_aggregate(&mut db, core, rule, &pred_stratum, stratum)?;
+            eval_aggregate(db, core, rule, &pred_stratum, stratum, terms)?;
         }
 
         loop {
@@ -304,10 +315,10 @@ pub fn run_prov_with_budget(
                 let mut binding = vec![None; rule.var_count as usize];
                 let mut acc = ProofSet::from([Proof::new()]);
                 solve_prov(
-                    &db,
+                    db,
                     &pred_stratum,
                     stratum,
-                    &terms,
+                    terms,
                     rule,
                     0,
                     &mut binding,
@@ -349,7 +360,7 @@ pub fn run_prov_with_budget(
             }
         }
     }
-    Ok(db)
+    Ok(())
 }
 
 /// Solve one rule body left-to-right, threading the proof-DNF product.
@@ -358,7 +369,7 @@ fn solve_prov(
     db: &ProvDb,
     pred_stratum: &HashMap<String, u32>,
     cur_stratum: u32,
-    terms: &TermTable,
+    terms: &mut TermTable,
     rule: &CoreRule,
     idx: usize,
     binding: &mut [Option<GroundVal>],
@@ -367,11 +378,10 @@ fn solve_prov(
     max_proofs: usize,
 ) -> Result<(), EvalErrorOrProv> {
     if idx == rule.body.len() {
-        // Head grounding cannot build compounds here (capture is term-read-only);
-        // reuse the Bool grounding via a throwaway table.
-        let mut throwaway = TermTable::new(0);
-        if let Some(tuple) = crate::naive::build_head(&rule.head, binding, &mut throwaway)
-            .map_err(EvalErrorOrProv::eval)?
+        // Heads may construct compound terms; they intern into the program's
+        // shared table (depth-bounded → dropped derivation, sound-incomplete).
+        if let Some(tuple) =
+            crate::naive::build_head(&rule.head, binding, terms).map_err(EvalErrorOrProv::eval)?
         {
             out.push((rule.head.pred.clone(), tuple, acc.clone()));
         }
@@ -426,9 +436,8 @@ fn solve_prov(
                     pred: atom.pred.clone(),
                 }));
             }
-            let mut throwaway = TermTable::new(0);
-            let Some(tuple) = crate::naive::build_head(atom, binding, &mut throwaway)
-                .map_err(EvalErrorOrProv::eval)?
+            let Some(tuple) =
+                crate::naive::build_head(atom, binding, terms).map_err(EvalErrorOrProv::eval)?
             else {
                 // A depth-bounded term cannot be present: the negation holds.
                 return solve_prov(
@@ -465,38 +474,39 @@ fn solve_prov(
                 Some(proofs) => {
                     if proofs.contains(&Proof::new()) {
                         // Certainly present: the negation fails, prune.
-                        Ok(())
-                    } else if proofs.iter().all(|p| p.len() == 1) {
-                        // All-singleton DNF: ¬(l₁ ∨ ... ∨ lₙ) = {¬l₁ ∧ ... ∧ ¬lₙ},
-                        // one dual-literal proof (soft EDB facts land here).
-                        let complement: Proof = proofs
-                            .iter()
-                            .map(|p| -*p.iter().next().expect("singleton"))
-                            .collect();
-                        if complement.iter().any(|&l| complement.contains(&(-l))) {
-                            return Ok(()); // ¬x ∧ x: unsatisfiable
-                        }
-                        let mut next = product(acc, &ProofSet::from([complement]));
-                        if next.is_empty() {
-                            return Ok(());
-                        }
-                        solve_prov(
-                            db,
-                            pred_stratum,
-                            cur_stratum,
-                            terms,
-                            rule,
-                            idx + 1,
-                            binding,
-                            &mut next,
-                            out,
-                            max_proofs,
-                        )
-                    } else {
-                        Err(EvalErrorOrProv::Prov(ProvError::SoftNegation(
-                            atom.pred.clone(),
-                        )))
+                        return Ok(());
                     }
+                    // Derived soft provenance: the absence of the atom is the
+                    // complement of its proof DNF — dual literals distributed,
+                    // budgeted like every other proof set.
+                    let Some(negated) = complement(proofs, max_proofs) else {
+                        return Err(EvalErrorOrProv::Prov(ProvError::ProofBudget {
+                            pred: atom.pred.clone(),
+                            bound: max_proofs,
+                        }));
+                    };
+                    let mut next = product(acc, &negated);
+                    if next.is_empty() {
+                        return Ok(()); // contradictory: the tuple is certain here
+                    }
+                    if next.len() > max_proofs {
+                        return Err(EvalErrorOrProv::Prov(ProvError::ProofBudget {
+                            pred: rule.head.pred.clone(),
+                            bound: max_proofs,
+                        }));
+                    }
+                    solve_prov(
+                        db,
+                        pred_stratum,
+                        cur_stratum,
+                        terms,
+                        rule,
+                        idx + 1,
+                        binding,
+                        &mut next,
+                        out,
+                        max_proofs,
+                    )
                 }
             }
         }
@@ -512,6 +522,7 @@ fn eval_aggregate(
     rule: &CoreRule,
     pred_stratum: &HashMap<String, u32>,
     cur: u32,
+    terms: &mut TermTable,
 ) -> Result<(), ProvError> {
     for lit in &rule.body {
         let (CoreLiteral::Pos(a) | CoreLiteral::Neg(a)) = lit;
@@ -540,8 +551,7 @@ fn eval_aggregate(
             bool_db.insert(pred, tuple.clone(), crate::value::Ann::Unit);
         }
     }
-    let mut terms = TermTable::new(0);
-    crate::naive::eval_aggregate_rule(&mut bool_db, rule, pred_stratum, cur, &mut terms)
+    crate::naive::eval_aggregate_rule(&mut bool_db, rule, pred_stratum, cur, terms)
         .map_err(ProvError::Eval)?;
     let head_rel = bool_db
         .relation(&rule.head.pred)
@@ -669,8 +679,10 @@ mod tests {
         certain: &[(String, Tuple)],
         prob: &[(String, Tuple, f64)],
     ) {
-        let dbp = run_prov(core, certain, prob, &HashMap::new()).expect("capture runs");
-        let m = prob::marginals(core, certain, prob).expect("enumeration runs");
+        let dbp = run_prov(core, certain, prob, &HashMap::new(), &mut TermTable::new(0))
+            .expect("capture runs");
+        let m =
+            prob::marginals(core, certain, prob, &mut TermTable::new(0)).expect("enumeration runs");
         for (pred, rel) in &dbp.rels {
             for tuple in rel.keys() {
                 let proofs = dbp.query(pred, &vec![None; tuple.len()]);
@@ -727,7 +739,14 @@ mod tests {
         let prob = vec![edge(1, 2, 0.4), edge(0, 2, 0.3)];
         assert_capture_matches_enumeration(&core, &certain, &prob);
         // path(a,b) rests on a certain edge: its only proof is empty.
-        let dbp = run_prov(&core, &certain, &prob, &HashMap::new()).unwrap();
+        let dbp = run_prov(
+            &core,
+            &certain,
+            &prob,
+            &HashMap::new(),
+            &mut TermTable::new(0),
+        )
+        .unwrap();
         let ps = &dbp.rels["path"][&vec![sym(0), sym(1)]];
         assert_eq!(ps.len(), 1);
         assert!(ps.contains(&Proof::new()));
@@ -761,15 +780,23 @@ mod tests {
         let core = neg_program();
         let certain = vec![("node".to_string(), vec![sym(0)])];
         let prob = vec![("flag".to_string(), vec![sym(0)], 0.3)];
-        let dbp = run_prov(&core, &certain, &prob, &HashMap::new()).unwrap();
+        let dbp = run_prov(
+            &core,
+            &certain,
+            &prob,
+            &HashMap::new(),
+            &mut TermTable::new(0),
+        )
+        .unwrap();
         let ps = &dbp.rels["q"][&vec![sym(0)]];
         assert_eq!(ps.iter().next().unwrap(), &Proof::from([-1i64]));
         assert_capture_matches_enumeration(&core, &certain, &prob);
     }
 
     #[test]
-    fn negation_over_derived_soft_provenance_is_refused() {
-        // flag is now *derived* from two soft sources → not all-singleton.
+    fn negation_over_derived_soft_provenance_is_the_dnf_complement() {
+        // flag is *derived* from two soft sources: ¬flag = ¬s1 ∨ ¬s2 as a
+        // proof DNF ({−1}, {−2}); the marginal must match world enumeration.
         let a1 = |n: &str| CoreAtom {
             pred: n.into(),
             args: vec![v(0)],
@@ -802,11 +829,22 @@ mod tests {
         };
         let certain = vec![("node".to_string(), vec![sym(0)])];
         let prob = vec![
-            ("s1".to_string(), vec![sym(0)], 0.5),
-            ("s2".to_string(), vec![sym(0)], 0.5),
+            ("s1".to_string(), vec![sym(0)], 0.6),
+            ("s2".to_string(), vec![sym(0)], 0.7),
         ];
-        let err = run_prov(&core, &certain, &prob, &HashMap::new()).unwrap_err();
-        assert!(matches!(err, ProvError::SoftNegation(p) if p == "flag"));
+        // P(q) = 1 − P(s1 ∧ s2) = 1 − 0.42 = 0.58; and the full differential.
+        assert_capture_matches_enumeration(&core, &certain, &prob);
+        let dbp = run_prov(
+            &core,
+            &certain,
+            &prob,
+            &HashMap::new(),
+            &mut TermTable::new(0),
+        )
+        .unwrap();
+        let ps = &dbp.rels["q"][&vec![sym(0)]];
+        assert_eq!(ps.len(), 2, "¬s1 ∨ ¬s2: two dual-literal proofs");
+        assert!((brute(&dbp.query("q", &[None])[0].1, &prob) - 0.58).abs() < 1e-12);
     }
 
     #[test]
@@ -822,7 +860,7 @@ mod tests {
         ];
         let target = vec![sym(0), sym(3)];
         let exact = {
-            let dbp = run_prov(&core, &[], &prob, &HashMap::new()).unwrap();
+            let dbp = run_prov(&core, &[], &prob, &HashMap::new(), &mut TermTable::new(0)).unwrap();
             brute(
                 &dbp.query("path", &[Some(sym(0)), Some(sym(3))])[0].1,
                 &prob,
@@ -831,7 +869,7 @@ mod tests {
         let mut prev = 0.0;
         for k in 1..=3 {
             let modes = HashMap::from([("path".to_string(), ProvMode::TopK(k))]);
-            let dbp = run_prov(&core, &[], &prob, &modes).unwrap();
+            let dbp = run_prov(&core, &[], &prob, &modes, &mut TermTable::new(0)).unwrap();
             let ps = &dbp.rels["path"][&target];
             assert!(ps.len() <= k as usize, "k={k}: kept {}", ps.len());
             let lb = brute(
@@ -844,7 +882,7 @@ mod tests {
         }
         // k big enough covers every minimal proof → exact.
         let modes = HashMap::from([("path".to_string(), ProvMode::TopK(64))]);
-        let dbp = run_prov(&core, &[], &prob, &modes).unwrap();
+        let dbp = run_prov(&core, &[], &prob, &modes, &mut TermTable::new(0)).unwrap();
         let full = brute(
             &dbp.query("path", &[Some(sym(0)), Some(sym(3))])[0].1,
             &prob,
@@ -881,11 +919,25 @@ mod tests {
             ("edge".to_string(), vec![sym(0), sym(1)]),
             ("edge".to_string(), vec![sym(0), sym(2)]),
         ];
-        let dbp = run_prov(&core, &certain, &[], &HashMap::new()).unwrap();
+        let dbp = run_prov(
+            &core,
+            &certain,
+            &[],
+            &HashMap::new(),
+            &mut TermTable::new(0),
+        )
+        .unwrap();
         let ps = &dbp.rels["deg"][&vec![sym(0), GroundVal::Int(2)]];
         assert!(ps.contains(&Proof::new()));
         // A soft edge in the aggregate body is refused.
-        let err = run_prov(&core, &certain, &[edge(0, 3, 0.5)], &HashMap::new()).unwrap_err();
+        let err = run_prov(
+            &core,
+            &certain,
+            &[edge(0, 3, 0.5)],
+            &HashMap::new(),
+            &mut TermTable::new(0),
+        )
+        .unwrap_err();
         assert!(matches!(err, ProvError::SoftAggregate(p) if p == "edge"));
     }
 
@@ -897,7 +949,15 @@ mod tests {
         let prob: Vec<_> = (1..=4)
             .flat_map(|m| vec![edge(0, m, 0.5), edge(m, 5, 0.5)])
             .collect();
-        let err = run_prov_with_budget(&core, &[], &prob, &HashMap::new(), 2).unwrap_err();
+        let err = run_prov_with_budget(
+            &core,
+            &[],
+            &prob,
+            &HashMap::new(),
+            2,
+            &mut TermTable::new(0),
+        )
+        .unwrap_err();
         match &err {
             ProvError::ProofBudget { pred, bound } => {
                 assert_eq!(pred, "path");
@@ -907,7 +967,7 @@ mod tests {
             other => panic!("expected ProofBudget, got {other:?}"),
         }
         let modes = HashMap::from([("path".to_string(), ProvMode::TopK(2))]);
-        run_prov_with_budget(&core, &[], &prob, &modes, 2)
+        run_prov_with_budget(&core, &[], &prob, &modes, 2, &mut TermTable::new(0))
             .expect("Prov_k pruning keeps the same program inside the budget");
     }
 
@@ -918,13 +978,95 @@ mod tests {
         let core = tc_program();
         let prob: Vec<_> = (0..25).map(|i| edge(i, i + 1, 0.9)).collect();
         assert!(
-            prob::marginals(&core, &[], &prob).is_err(),
+            prob::marginals(&core, &[], &prob, &mut TermTable::new(0)).is_err(),
             "oracle refuses"
         );
-        let dbp = run_prov(&core, &[], &prob, &HashMap::new()).unwrap();
+        let dbp = run_prov(&core, &[], &prob, &HashMap::new(), &mut TermTable::new(0)).unwrap();
         let ps = &dbp.rels["path"][&vec![sym(0), sym(25)]];
         assert_eq!(ps.len(), 1, "one minimal proof for the full chain");
         assert_eq!(ps.iter().next().unwrap().len(), 25);
+    }
+
+    #[test]
+    fn fuzz_negation_over_soft_reachability_matches_enumeration() {
+        // reach1(Y) :- edge(c0, Y).  reach1(Z) :- reach1(Y), edge(Y, Z).
+        // unreach(Y) :- node(Y), not reach1(Y).   — negation over a *derived*
+        // soft predicate, per random soft digraph, against the world oracle.
+        let c0 = CoreTerm::Const { sym: SymbolId(0) };
+        let a1 = |n: &str, slot: u32| CoreAtom {
+            pred: n.into(),
+            args: vec![v(slot)],
+        };
+        let core = CoreProgram {
+            predicates: vec![
+                bpred("node", 1, 0),
+                bpred("edge", 2, 0),
+                bpred("reach1", 1, 0),
+                bpred("unreach", 1, 1),
+            ],
+            rules: vec![
+                CoreRule {
+                    head: a1("reach1", 0),
+                    body: vec![CoreLiteral::Pos(CoreAtom {
+                        pred: "edge".into(),
+                        args: vec![c0.clone(), v(0)],
+                    })],
+                    stratum: 0,
+                    var_count: 1,
+                    neg_weight_cycle_check: false,
+                },
+                CoreRule {
+                    head: a1("reach1", 1),
+                    body: vec![
+                        CoreLiteral::Pos(a1("reach1", 0)),
+                        CoreLiteral::Pos(atom2("edge", 0, 1)),
+                    ],
+                    stratum: 0,
+                    var_count: 2,
+                    neg_weight_cycle_check: false,
+                },
+                CoreRule {
+                    head: a1("unreach", 0),
+                    body: vec![
+                        CoreLiteral::Pos(a1("node", 0)),
+                        CoreLiteral::Neg(a1("reach1", 0)),
+                    ],
+                    stratum: 1,
+                    var_count: 1,
+                    neg_weight_cycle_check: false,
+                },
+            ],
+            num_strata: 2,
+        };
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut rng = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _case in 0..40 {
+            let nodes = 3 + (rng() % 3) as u32;
+            let mut certain: Vec<(String, Tuple)> = (0..nodes)
+                .map(|i| ("node".to_string(), vec![sym(i)]))
+                .collect();
+            let mut seen = std::collections::HashSet::new();
+            let mut prob = Vec::new();
+            for _ in 0..(2 + (rng() % 6) as usize) {
+                let x = (rng() % nodes as u64) as u32;
+                let y = (rng() % nodes as u64) as u32;
+                if x == y || !seen.insert((x, y)) {
+                    continue;
+                }
+                if rng() % 5 == 0 {
+                    certain.push(("edge".to_string(), vec![sym(x), sym(y)]));
+                } else {
+                    let p = (rng() % 1001) as f64 / 1000.0;
+                    prob.push(edge(x, y, p));
+                }
+            }
+            assert_capture_matches_enumeration(&core, &certain, &prob);
+        }
     }
 
     #[test]
