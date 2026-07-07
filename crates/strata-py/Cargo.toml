@@ -1,0 +1,33 @@
+[package]
+name = "strata-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Strata/K — the Python bridge (pyo3): compile, evaluate, probabilistic and gradient queries, provenance DNFs, ASP models, Python callables as neural models"
+publish = false # ships as a wheel (maturin), not a crates.io library
+
+# The Python extension module. `import strata_k` — the module name is set by
+# maturin (`module-name` in pyproject.toml); the Rust lib target stays
+# `strata_py` so it cannot collide with the `strata-k` rlib in this workspace.
+[lib]
+name = "strata_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+strata-ir.workspace = true
+strata-front.workspace = true
+strata-check.workspace = true
+strata-eval.workspace = true
+strata-asp.workspace = true
+strata-prob.workspace = true
+strata-k.workspace = true
+pyo3 = { version = "0.29", features = ["abi3-py310", "extension-module"] }
+
+# Not `workspace = true`: the workspace forbids `unsafe_code`, but pyo3's
+# macro-generated FFI glue (module init, class registration) is unsafe by
+# nature. This crate contains no hand-written unsafe; clippy stays at the
+# workspace bar.
+[lints.clippy]
+all = { level = "warn", priority = -1 }

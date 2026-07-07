@@ -4,6 +4,11 @@ Cargo.lock.orig
 .DS_Store
 # Cargo.lock IS committed: this workspace ships a binary (strata-cli).
 
+# Python bridge artifacts (strata-py builds via maturin; tests leave caches).
+__pycache__/
+*.pyc
+.venv/
+
 # Claude Code worktrees / agent scratch (never tracked, never published).
 /.claude/
 /graphify-out/

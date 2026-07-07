@@ -11,6 +11,7 @@ members = [
     "crates/strata-prob",
     "crates/strata-k",
     "crates/strata-cli",
+    "crates/strata-py",
 ]
 
 [workspace.package]

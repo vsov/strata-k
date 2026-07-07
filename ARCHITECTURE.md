@@ -50,12 +50,14 @@ strata-prob    provenance circuits for режим B — SDD-class circuit, exact
 strata-k       the library facade — compile/eval/queries/provenance/ASP behind
                one dependency, plus the Model trait (in-process neural boundary)
 strata-cli     the `strata` binary — ties the crates into the end-to-end path
+strata-py      the Python bridge (pyo3, abi3) — `import strata_k`: the same
+               pipeline plus Python callables as models; built by maturin
 ```
 
 Dependency edges point only *down*: `strata-front` and `strata-check` are
 siblings that each depend only on `strata-ir`; `strata-eval` and `strata-asp`
-depend on `strata-ir`; `strata-k` (the embeddable facade) and `strata-cli`
-each depend on all of them. `strata-gpu`,
+depend on `strata-ir`; `strata-k` (the embeddable facade), `strata-cli`, and
+`strata-py` (a thin veneer over the facade) each depend on all of them. `strata-gpu`,
 `strata-terms`, and `strata-prob` are self-contained engine crates validated
 against the reference stack. Shared data types (the symbol dictionary,
 `GroundVal`/`GroundFact`, the `TermTable`, the `Diagnostics` collector) live in
@@ -63,7 +65,9 @@ against the reference stack. Shared data types (the symbol dictionary,
 other.
 
 The workspace forbids `unsafe` by default (`unsafe_code = "forbid"`), relaxed
-only in `strata-gpu` for device launches. MSRV is **Rust 1.82**.
+only in `strata-gpu` for device launches and not inherited by `strata-py`
+(pyo3's macro-generated FFI glue is unsafe by nature; the crate contains no
+hand-written unsafe). MSRV is **Rust 1.82**.
 
 ## The two-level IR
 

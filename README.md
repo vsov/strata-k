@@ -48,8 +48,17 @@ cargo install --path crates/strata-cli    # the `strata` binary
 strata-k = { git = "https://github.com/vsov/strata-k" }
 ```
 
-(The crates are not on crates.io yet; the git dependency and `cargo install
---path` are the supported channels.)
+Or use it from Python — the bridge exposes the same pipeline (`compile`,
+`eval`, `prob_query`/`grad_query`, provenance DNFs, ASP models, Python
+callables as neural models); see [crates/strata-py](crates/strata-py/README.md):
+
+```sh
+pip install maturin && pip install ./crates/strata-py
+python -c 'import strata_k; print(strata_k.compile("pred p(int): Bool.\np(1).").eval())'
+```
+
+(The crates are not on crates.io/PyPI yet; the git dependency, `cargo install
+--path`, and `pip install ./crates/strata-py` are the supported channels.)
 
 `examples/tc.strata` computes a transitive closure:
 
@@ -152,7 +161,7 @@ convention is in [`docs/ir-encoding.md`](docs/ir-encoding.md).
 
 ## Architecture
 
-A Cargo workspace of ten crates, layered so the base has no sibling
+A Cargo workspace of eleven crates, layered so the base has no sibling
 dependencies:
 
 ```
@@ -171,6 +180,7 @@ strata-terms   structural-term machinery — interning, magic sets, points-to
 strata-prob    provenance circuits — SDD-class WMC, gradients, top-k, MNIST-sum
 strata-k       the library facade — embed the engine; Model trait (in-process neural)
 strata-cli     the `strata` binary
+strata-py      the Python bridge (pyo3) — `import strata_k`; built by maturin
 ```
 
 `strata-front` and `strata-check` are siblings that both depend only on
@@ -200,6 +210,9 @@ Soufflé. If `souffle` is not installed, the differential tests skip cleanly.
 Probabilistic queries are computed by exact possible-world enumeration (the
 obviously-correct режим-B reference); answer sets by the Gelfond–Lifschitz
 reduct — both the slow, exact oracles a compiled/GPU method must later match.
+The provenance circuit has an *external* differential too: the Python test
+suite compiles the same proof DNFs with PySDD (the UCLA SDD package) and the
+two weighted counts must agree (`crates/strata-py/tests/`, mandatory in CI).
 
 ## The book
 
@@ -217,6 +230,7 @@ mdbook serve book   # if you have mdBook installed
 ## Documentation
 
 - [docs/language.md](docs/language.md) — the language reference (syntax + semantics)
+- [crates/strata-py/README.md](crates/strata-py/README.md) — the Python bridge (`import strata_k`)
 - [ARCHITECTURE.md](ARCHITECTURE.md) — crate graph, two-level IR, evaluation engines
 - [CONTRIBUTING.md](CONTRIBUTING.md) — build, test, and the differential-testing story
 - [docs/grammar.ebnf](docs/grammar.ebnf) — the formal grammar

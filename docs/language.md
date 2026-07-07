@@ -285,6 +285,13 @@ permission: exact capture refuses a tuple whose minimal-proof set passes
 typed error naming the valve (`Prov_k`), never an OOM. `Prov_k` capture prunes
 as it goes, so it stays inside the budget by construction.
 
+The proof DNFs themselves are exportable — the library facade returns them as
+signed-literal vectors, and the Python bridge (`Program.provenance()`,
+`strata_k.wmc` / `wmc_grad`) hands them to external compilers in the same
+shape. A real SDD package (PySDD) is compiled against them as a differential
+oracle in CI: the external compiler's weighted count and the built-in Shannon
+circuit's must agree, on fuzzed DNFs and on captured provenance alike.
+
 ## Neural predicates
 
 A `neural` predicate declares that its ground atoms are the **soft outputs of a
@@ -316,9 +323,13 @@ into. The *model itself* is host-side: the CLI takes its outputs as data (inline
 `p :: n(...)` facts or an `input` file with a trailing probability column),
 and the `strata-k` library crate wires it **in-process** — a `Model` object's
 forward pass supplies the soft facts at attach time, and gradients flow back
-to it by position (see [crates/strata-k](../crates/strata-k)). What stays
-open is production scale, not the wiring; the interface — soft facts in,
-gradients out — is what the language defines.
+to it by position (see [crates/strata-k](../crates/strata-k)). The same
+boundary crosses into Python: `pip install ./crates/strata-py`, then
+`import strata_k`, attach a callable as the model, and the exact `?grad`
+gradient arrives host-side — `examples/python/train_gnn.py` trains a PyTorch
+network *through* the logic layer this way, the engine acting as one more
+differentiable function. What stays open is production scale, not the wiring;
+the interface — soft facts in, gradients out — is what the language defines.
 
 ## Structural terms (`@terms`)
 

@@ -1,0 +1,29 @@
+# The Python package of Strata/K: `pip install .` here (or `maturin develop`)
+# builds the pyo3 extension and installs `import strata_k`.
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "strata-k"
+description = "Strata/K — stratified, semiring-parameterized Datalog: compile, evaluate, probabilistic + gradient queries, provenance DNFs, ASP models, Python callables as neural models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Interpreters",
+]
+
+[project.optional-dependencies]
+# The external-compiler differential oracle (tests) and the training example.
+sdd = ["PySDD"]
+torch = ["torch"]
+
+[tool.maturin]
+# The import name. The Rust lib target is `strata_py` (a name collision with
+# the `strata-k` rlib in the same workspace would break cargo); maturin names
+# the extension module independently.
+module-name = "strata_k"

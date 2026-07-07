@@ -53,3 +53,29 @@ jobs:
         run: cargo test -p strata-cli --test souffle_diff
       - name: clingo/clasp differentials (ASP stack)
         run: cargo test -p strata-asp
+
+  # The Python bridge, with its oracles MANDATORY (same contract as above):
+  # PySDD is the external-SDD differential, torch drives the GNN-training
+  # example end to end. Versions pinned; wheels verified to exist for
+  # cp312/manylinux before being written here.
+  python-bridge:
+    runs-on: ubuntu-latest
+    env:
+      STRATA_REQUIRE_ORACLES: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python toolchain + oracles (pinned)
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install maturin==1.14.1 pytest==9.1.1 PySDD==1.0.6 numpy
+          pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+      - name: Build + install the bridge
+        run: pip install ./crates/strata-py
+      - name: pytest (bridge + SDD differential + GNN training)
+        run: pytest crates/strata-py/tests -q
