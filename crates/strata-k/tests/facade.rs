@@ -183,6 +183,35 @@ fn inputs_load_through_the_facade_with_typed_columns() {
 }
 
 #[test]
+fn second_load_inputs_fails_and_leaves_state_unchanged() {
+    use strata_k::load_inputs;
+    let dir = std::env::temp_dir().join(format!("strata_k_reload_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("flags.tsv"), "acme\t0.9\n").unwrap();
+    let src = concat!(
+        "domain firm.\n",
+        "neural flag(firm) from model \"m\".\n",
+        "pred investigate(firm): Bool.\n",
+        "investigate(X) :- flag(X).\n",
+        "input flag from \"flags.tsv\".\n",
+    );
+    let (prog, d) = strata_k::parse(src);
+    assert!(!d.has_errors());
+    let mut checked = strata_check::check_program(&prog).expect("check");
+    load_inputs(&prog, &mut checked, &dir).expect("first load");
+    let before = checked.prob_edb.clone();
+    assert_eq!(before.len(), 1);
+    // A second load would double the soft fact and shift P(0.9) to 0.99 — refuse
+    // instead, and leave prob_edb exactly as the first load left it.
+    let err = load_inputs(&prog, &mut checked, &dir).expect_err("second load");
+    assert!(err.contains("already called"), "{err}");
+    assert_eq!(
+        checked.prob_edb, before,
+        "failed reload left nothing behind"
+    );
+}
+
+#[test]
 fn wrong_arity_model_output_is_a_typed_error() {
     struct Fat;
     impl Model for Fat {

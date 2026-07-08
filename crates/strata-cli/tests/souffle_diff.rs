@@ -355,6 +355,7 @@ fn gen_bool(seed: u64) -> Checked {
         terms: strata_ir::terms::TermTable::new(strata_ir::terms::DEFAULT_MAX_DEPTH),
         annotations: std::collections::HashMap::new(),
         models_attached: false,
+        inputs_loaded: false,
     }
 }
 

@@ -56,6 +56,10 @@ pub struct Checked {
     /// append the same soft facts again and silently shift every marginal, so
     /// the facade refuses it. Fresh from `check_program`, always `false`.
     pub models_attached: bool,
+    /// Set by `strata_k::load_inputs` on success: a second load would append
+    /// the same `input` rows again (and double any soft/neural facts, shifting
+    /// marginals), so the loader refuses it. Fresh from `check_program`, `false`.
+    pub inputs_loaded: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,6 +383,7 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
         terms,
         annotations,
         models_attached: false,
+        inputs_loaded: false,
     })
 }
 

@@ -51,6 +51,17 @@ impl Cell {
 /// symbol — so a numeric key means the same value loaded from a file, from
 /// JSON, or written inline.
 pub fn load_inputs(program: &Program, checked: &mut Checked, base: &Path) -> Result<(), String> {
+    if checked.inputs_loaded {
+        // A second load would append the same `input` rows again — doubling any
+        // neural/soft facts and silently shifting every marginal, the same
+        // misuse `attach_models` refuses. There is no cheap way to tell
+        // input-derived rows from inline facts to make reload idempotent, so
+        // refuse instead of corrupting.
+        return Err("load_inputs was already called for this program; a second \
+                    call would duplicate the input rows (compile a fresh program \
+                    instead)"
+            .to_string());
+    }
     for item in &program.items {
         let ItemKind::Input(inp) = &item.node else {
             continue;
@@ -171,6 +182,7 @@ pub fn load_inputs(program: &Program, checked: &mut Checked, base: &Path) -> Res
             }
         }
     }
+    checked.inputs_loaded = true;
     Ok(())
 }
 
@@ -212,22 +224,49 @@ fn delimited_rows(path: &Path, delim: char) -> Result<Vec<(usize, Vec<Cell>)>, S
 }
 
 /// A minimal RFC-4180 field splitter: quoted fields, `""` escapes, no
-/// embedded newlines (rows are lines).
+/// embedded newlines (rows are lines). A quoted field must be *whole*: after
+/// its closing quote only a delimiter or end-of-line may follow — trailing junk
+/// (`"a"x,b`) or a bare quote inside an unquoted field is a load error, not
+/// silently-accepted data (a corrupted export must fail loudly).
 fn split_csv_line(line: &str) -> Result<Vec<String>, String> {
     let mut cells = Vec::new();
     let mut cur = String::new();
     let mut chars = line.chars().peekable();
     let mut in_quotes = false;
+    // The current field began with a quote (so a bare `"` inside it is illegal
+    // unless doubled), and whether we have passed its closing quote.
+    let mut quoted_field = false;
+    let mut quote_closed = false;
     while let Some(c) = chars.next() {
         match (in_quotes, c) {
-            (false, ',') => cells.push(std::mem::take(&mut cur)),
-            (false, '"') if cur.is_empty() => in_quotes = true,
+            (false, ',') => {
+                cells.push(std::mem::take(&mut cur));
+                quoted_field = false;
+                quote_closed = false;
+            }
+            (false, '"') if cur.is_empty() && !quoted_field => {
+                in_quotes = true;
+                quoted_field = true;
+            }
+            // A quote anywhere else in an unquoted field, or after a quoted
+            // field already closed, is malformed.
+            (false, '"') => {
+                return Err("unexpected `\"` in CSV field (quotes must wrap the \
+                            whole field, and `\"` inside must be doubled)"
+                    .to_string());
+            }
+            // After the closing quote of a quoted field, only a delimiter (the
+            // arm above) may follow — anything else is trailing junk.
+            (false, _) if quote_closed => {
+                return Err("trailing characters after a closing CSV quote".to_string());
+            }
             (true, '"') => {
                 if chars.peek() == Some(&'"') {
                     chars.next();
                     cur.push('"');
                 } else {
                     in_quotes = false;
+                    quote_closed = true;
                 }
             }
             (_, c) => cur.push(c),
@@ -287,4 +326,36 @@ fn json_rows(path: &Path) -> Result<Vec<(usize, Vec<Cell>)>, String> {
             Ok((i + 1, parsed?))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_csv_line;
+
+    #[test]
+    fn csv_accepts_wellformed_quoted_and_plain() {
+        assert_eq!(split_csv_line("a,b").unwrap(), ["a", "b"]);
+        assert_eq!(split_csv_line("\"a\",\"b\"").unwrap(), ["a", "b"]);
+        // doubled quote is an escaped quote inside the field
+        assert_eq!(split_csv_line("\"a\"\"b\",c").unwrap(), ["a\"b", "c"]);
+        // empty quoted field
+        assert_eq!(split_csv_line("\"\",b").unwrap(), ["", "b"]);
+    }
+
+    #[test]
+    fn csv_rejects_trailing_junk_after_closing_quote() {
+        // The Excel/script corruption case: `"a"junk` must be a load error,
+        // not the silently-accepted constant `ajunk`.
+        assert!(split_csv_line("\"a\"junk,b").is_err());
+    }
+
+    #[test]
+    fn csv_rejects_bare_quote_in_unquoted_field() {
+        assert!(split_csv_line("a\"b,c").is_err());
+    }
+
+    #[test]
+    fn csv_rejects_unterminated_quote() {
+        assert!(split_csv_line("\"a,b").is_err());
+    }
 }

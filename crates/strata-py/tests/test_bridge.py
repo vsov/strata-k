@@ -222,5 +222,30 @@ def test_load_inputs(tmp_path):
     )
     p.load_inputs(str(tmp_path))
     assert p.eval()["tc"] == [(1, 2), (1, 3), (2, 3)]
+
+
+def test_missing_input_dir_is_an_error(tmp_path):
+    p = strata_k.compile(
+        "pred edge(int, int): Bool.\n" 'input edge from "edge.tsv".\n'
+    )
     with pytest.raises(ValueError):
         p.load_inputs(str(tmp_path / "missing"))
+
+
+def test_second_load_inputs_raises_and_leaves_state_unchanged(tmp_path):
+    (tmp_path / "flags.tsv").write_text("acme\t0.9\n")
+    p = strata_k.compile(
+        "domain firm.\n"
+        'neural flag(firm) from model "m".\n'
+        "pred investigate(firm): Bool.\n"
+        "investigate(X) :- flag(X).\n"
+        'input flag from "flags.tsv".\n'
+    )
+    p.load_inputs(str(tmp_path))
+    assert p.prob_facts() == [("flag", ("acme",), 0.9)]
+    # A second load would double the soft fact and shift the marginal 0.9 -> 0.99.
+    with pytest.raises(ValueError, match="already called"):
+        p.load_inputs(str(tmp_path))
+    assert p.prob_facts() == [("flag", ("acme",), 0.9)]
+    ((_, prob),) = p.prob_query("investigate")
+    assert prob == pytest.approx(0.9)

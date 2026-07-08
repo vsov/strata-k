@@ -78,11 +78,6 @@ fn print_help() {
 
 // --- argument helpers --------------------------------------------------------
 
-fn positional(args: &[String]) -> Option<&str> {
-    args.iter()
-        .find(|a| !a.starts_with('-'))
-        .map(String::as_str)
-}
 fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|a| a == flag)
 }
@@ -93,13 +88,60 @@ fn wants_json(args: &[String]) -> bool {
     opt_value(args, "--error-format=") == Some("json")
 }
 
-fn read(args: &[String]) -> Result<(String, String), Code> {
-    let Some(path) = positional(args) else {
-        eprintln!("strata: expected a file argument");
-        return Err(Code::Usage);
+/// Strict argv for the file-taking subcommands: every `-`-leading token must be
+/// an allowed flag, `--error-format=` must be `text|json`, and exactly one
+/// non-flag file argument may appear. `--` forces the remaining tokens to be
+/// treated as files (so a filename may legitimately start with `-`). Returns
+/// the single file path, or a usage message.
+fn parse_file_args(args: &[String], allowed_flags: &[&str]) -> Result<String, String> {
+    let mut files: Vec<&str> = Vec::new();
+    let mut rest_are_files = false;
+    for a in args {
+        if rest_are_files {
+            files.push(a);
+        } else if a == "--" {
+            rest_are_files = true;
+        } else if let Some(val) = a.strip_prefix("--error-format=") {
+            if !allowed_flags.contains(&"--error-format=") {
+                return Err(format!("unknown flag `{a}`"));
+            }
+            if val != "text" && val != "json" {
+                return Err(format!(
+                    "--error-format must be `text` or `json`, got `{val}`"
+                ));
+            }
+        } else if a.starts_with('-') {
+            if !allowed_flags.contains(&a.as_str()) {
+                return Err(format!("unknown flag `{a}`"));
+            }
+        } else {
+            files.push(a);
+        }
+    }
+    match files.as_slice() {
+        [] => Err("expected a file argument".to_string()),
+        [f] => Ok((*f).to_string()),
+        _ => Err(format!(
+            "expected exactly one file argument, got {}: {}",
+            files.len(),
+            files.join(", ")
+        )),
+    }
+}
+
+/// Validate argv, then read the single file. `allowed_flags` lists the flags
+/// this subcommand accepts (`--error-format=` as a bare sentinel enables the
+/// text|json option).
+fn read(args: &[String], allowed_flags: &[&str]) -> Result<(String, String), Code> {
+    let path = match parse_file_args(args, allowed_flags) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("strata: {e}");
+            return Err(Code::Usage);
+        }
     };
-    match std::fs::read_to_string(path) {
-        Ok(src) => Ok((path.to_string(), src)),
+    match std::fs::read_to_string(&path) {
+        Ok(src) => Ok((path, src)),
         Err(e) => {
             eprintln!("strata: cannot read {path}: {e}");
             Err(Code::Usage)
@@ -119,7 +161,7 @@ fn emit(diags: &strata_ir::diag::Diagnostics, src: &str, json: bool) {
 // --- subcommands -------------------------------------------------------------
 
 fn cmd_check(args: &[String]) -> Code {
-    let (_, src) = match read(args) {
+    let (_, src) = match read(args, &["--error-format="]) {
         Ok(v) => v,
         Err(c) => return c,
     };
@@ -165,7 +207,7 @@ fn cmd_check(args: &[String]) -> Code {
 }
 
 fn cmd_run(args: &[String]) -> Code {
-    let (path, src) = match read(args) {
+    let (path, src) = match read(args, &["--semi-naive", "--error-format="]) {
         Ok(v) => v,
         Err(c) => return c,
     };
@@ -266,7 +308,7 @@ fn cmd_run(args: &[String]) -> Code {
 }
 
 fn cmd_fmt(args: &[String]) -> Code {
-    let (_, src) = match read(args) {
+    let (_, src) = match read(args, &["--check"]) {
         Ok(v) => v,
         Err(c) => return c,
     };
@@ -292,17 +334,59 @@ fn cmd_fmt(args: &[String]) -> Code {
 }
 
 fn cmd_ir(args: &[String]) -> Code {
-    let (_, src) = match read(args) {
-        Ok(v) => v,
-        Err(c) => return c,
+    // Strict argv: `--to json|surface` (or `--to=...`), exactly one file, no
+    // other flags. `--` forces the rest to be files.
+    let mut to: Option<String> = None;
+    let mut files: Vec<&str> = Vec::new();
+    let mut rest_are_files = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if rest_are_files {
+            files.push(a);
+        } else if a == "--" {
+            rest_are_files = true;
+        } else if let Some(v) = a.strip_prefix("--to=") {
+            to = Some(v.to_string());
+        } else if a == "--to" {
+            i += 1;
+            match args.get(i) {
+                Some(v) => to = Some(v.clone()),
+                None => {
+                    eprintln!("strata: `--to` needs a value (json|surface)");
+                    return Code::Usage;
+                }
+            }
+        } else if a.starts_with('-') {
+            eprintln!("strata: unknown flag `{a}`");
+            return Code::Usage;
+        } else {
+            files.push(a);
+        }
+        i += 1;
+    }
+    let path = match files.as_slice() {
+        [f] => *f,
+        [] => {
+            eprintln!("strata: expected a file argument");
+            return Code::Usage;
+        }
+        _ => {
+            eprintln!(
+                "strata: expected exactly one file argument, got {}",
+                files.len()
+            );
+            return Code::Usage;
+        }
     };
-    match opt_value(args, "--to=").or_else(|| {
-        // also accept `--to json`
-        args.iter()
-            .position(|a| a == "--to")
-            .and_then(|i| args.get(i + 1))
-            .map(String::as_str)
-    }) {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("strata: cannot read {path}: {e}");
+            return Code::Usage;
+        }
+    };
+    match to.as_deref() {
         Some("json") => {
             let (prog, diags) = parse(&src);
             if diags.has_errors() {
@@ -394,6 +478,44 @@ fn run_program(
 mod tests {
     use super::*;
     use strata_check::Checked;
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn strict_argv_rejects_misuse() {
+        let run = &["--semi-naive", "--error-format="];
+        // unknown flag
+        assert!(parse_file_args(&s(&["--bad", "f.strata"]), run).is_err());
+        // two files
+        assert!(parse_file_args(&s(&["a.strata", "b.strata"]), run).is_err());
+        // no file
+        assert!(parse_file_args(&s(&["--semi-naive"]), run).is_err());
+        // bad enum value
+        assert!(parse_file_args(&s(&["--error-format=yaml", "f.strata"]), run).is_err());
+        // a flag not in this subcommand's allowlist
+        assert!(parse_file_args(&s(&["--check", "f.strata"]), run).is_err());
+    }
+
+    #[test]
+    fn strict_argv_accepts_valid() {
+        let run = &["--semi-naive", "--error-format="];
+        assert_eq!(parse_file_args(&s(&["f.strata"]), run).unwrap(), "f.strata");
+        assert_eq!(
+            parse_file_args(&s(&["--semi-naive", "f.strata"]), run).unwrap(),
+            "f.strata"
+        );
+        assert_eq!(
+            parse_file_args(&s(&["--error-format=json", "f.strata"]), run).unwrap(),
+            "f.strata"
+        );
+        // `--` lets a filename legitimately start with a dash
+        assert_eq!(
+            parse_file_args(&s(&["--", "-dash.strata"]), run).unwrap(),
+            "-dash.strata"
+        );
+    }
 
     fn eval_src(src: &str, semi: bool) -> String {
         let (prog, diags) = parse(src);
