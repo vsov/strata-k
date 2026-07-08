@@ -124,8 +124,9 @@ input edge from "edges.tsv".            % load facts from a Soufflé-compatible 
 | Negation | `not p(..)` — stratified in the deductive core; unstratified under `@asp` |
 | Aggregates | `min`/`max`/`sum`/`count` (`prob_or` reserved); non-recursive |
 | Probabilistic | `0.87 :: fact.` + `?prob q(..)` → exact marginals (distribution semantics) |
+| Queries | plain `?q(a, _)` filters the run's output to matching tuples; `?prob`/`?grad` compute |
 | Answer sets | `@asp.` module → stable models via a reference solver |
-| EDB | inline facts, or `input p from "file.tsv"` |
+| EDB | inline facts, or `input p from "file.tsv"` — typed columns, atomic once-only load |
 
 ```
 $ strata run examples/prob.strata          # ?prob path(a, c)

@@ -18,3 +18,4 @@
 - [The Language That Checks Itself](09-the-language-that-checks-itself.md)
 - [Iron](10-iron.md)
 - [The Road](11-the-road.md)
+- [First Contact](12-first-contact.md)

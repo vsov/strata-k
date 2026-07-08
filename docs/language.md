@@ -452,9 +452,19 @@ value — the value space never splits on load path), a domain column interns
 non-empty text as a symbol. A row with the wrong number of columns, an empty
 cell, a float or bare number where a symbol is declared, a non-integer in an
 `int` column, or an unsupported extension is an error naming the file and
-line. For soft facts computed *in-process* rather than materialized, use the
-`strata-k` library crate's `Model` trait
-([crates/strata-k](../crates/strata-k)).
+line. CSV quoting is strict: a quoted field must be whole (`"a"junk` is a load
+error, not the constant `ajunk`), and a bare `"` inside an unquoted field is
+refused — a corrupted export fails loudly instead of becoming data.
+
+Loading is **atomic and once-only**. `load_inputs` validates every file and
+row before committing anything: a failure partway through (a missing second
+file, a bad row) leaves the program untouched, so a retry after fixing the
+input is clean. A second load after success is a typed error — it would append
+the same rows again and, for soft facts, silently shift every marginal. The
+in-process twin `attach_models` keeps the same two promises (nothing committed
+before full validation; a second attach refuses). For soft facts computed
+*in-process* rather than materialized, use the `strata-k` library crate's
+`Model` trait ([crates/strata-k](../crates/strata-k)).
 
 ## Diagnostics
 

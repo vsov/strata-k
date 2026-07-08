@@ -32,7 +32,8 @@ assert_eq!(ans.len(), 3); // P(path(a,b))=0.9, P(path(b,c))=0.8, P(path(a,c))=0.
 | `prob_query` / `grad_query` | exact marginals and `∂P/∂p_i` gradients (possible-world enumeration), take `&mut Checked` |
 | `provenance(&mut checked)` | `Prov`/`Prov_k` capture — minimal proof DNFs; compile with `compile_exact`, count with `Circuit::wmc`/`grad` |
 | `asp_models(src)` | stable models of an `@asp` program (declaration-checked) |
-| `Model` + `attach_models` | **the in-process neural boundary**: a model object's forward pass supplies the soft facts — computed, not pasted — and gradients flow back to it |
+| `Model` + `attach_models` | **the in-process neural boundary**: a model object's forward pass supplies the soft facts — computed, not pasted — and gradients flow back to it; a second attach is a typed error, never a silent duplicate |
+| `load_inputs(&program, &mut checked, base)` | resolve `input pred from "file"` declarations (TSV/CSV/JSON, columns typed by the declaration) — **atomic** (a mid-load failure commits nothing) and **once-only** (a reload is a typed error) |
 
 Run the end-to-end neural example:
 
