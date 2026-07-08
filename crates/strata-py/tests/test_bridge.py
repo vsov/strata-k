@@ -138,6 +138,40 @@ def test_attach_models_typed_errors():
         strata_k.compile(src).attach_models({"risk": boom})
 
 
+def test_undeclared_models_are_never_run():
+    # a registry with extra models: the undeclared callable must not run at
+    # all — not merely have its facts discarded downstream
+    p = strata_k.compile(
+        "domain firm.\n"
+        'neural flag(firm) from model "risk".\n'
+        "pred investigate(firm): Bool.\n"
+        "investigate(X) :- flag(X).\n"
+    )
+
+    def boom():
+        raise RuntimeError("undeclared model executed")
+
+    p.attach_models({"risk": lambda: [("flag", ("acme",), 0.9)], "extra": boom})
+    assert p.prob_facts() == [("flag", ("acme",), 0.9)]
+
+
+def test_second_attach_raises_instead_of_duplicating():
+    p = strata_k.compile(
+        "domain firm.\n"
+        'neural flag(firm) from model "risk".\n'
+        "pred investigate(firm): Bool.\n"
+        "investigate(X) :- flag(X).\n"
+    )
+    model = {"risk": lambda: [("flag", ("acme",), 0.9)]}
+    p.attach_models(model)
+    with pytest.raises(RuntimeError, match="already called"):
+        p.attach_models(model)
+    # the failed second call left nothing behind: still one fact, P = 0.9
+    assert p.prob_facts() == [("flag", ("acme",), 0.9)]
+    ((_, prob),) = p.prob_query("investigate")
+    assert prob == pytest.approx(0.9)
+
+
 def test_terms_render_structurally():
     p = strata_k.compile(
         "@terms.\n"

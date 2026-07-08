@@ -40,6 +40,7 @@ use strata_k::{Model, Tuple};
 struct Program {
     high: high::Program,
     checked: Checked,
+    models_attached: bool,
 }
 
 /// A Python argument value headed into the engine: `int` or `str` (symbol).
@@ -303,16 +304,34 @@ impl Program {
     /// Run each callable's forward pass and append its soft facts to the
     /// probabilistic EDB — the in-process `neural ... from model "name"`
     /// wiring. `models` maps model names to zero-argument callables returning
-    /// `[(pred, args, p), ...]`. Call once per program.
+    /// `[(pred, args, p), ...]`. Names the program does not declare are
+    /// ignored — their callables never run (so a registry of every model can
+    /// be passed to every program without paying for unused forward passes).
+    /// A second call raises: it would append the same soft facts again and
+    /// silently shift every marginal.
     fn attach_models(&mut self, models: &Bound<'_, PyDict>) -> PyResult<()> {
+        if self.models_attached {
+            return Err(PyRuntimeError::new_err(
+                "attach_models was already called for this program; a second call would \
+                 duplicate the soft facts (compile a fresh program instead)",
+            ));
+        }
         let mut adapters: Vec<PyModel> = Vec::new();
         for (k, v) in models.iter() {
             let name: String = k.extract()?;
+            // The facade ignores undeclared models; honor that here too, one
+            // layer earlier — never run a forward pass the program didn't ask
+            // for (it may be expensive, and its failure is not this program's).
+            if !self.checked.neural.iter().any(|(_, m)| *m == name) {
+                continue;
+            }
             let facts: Vec<(String, Vec<PyIn>, f64)> = v.call0()?.extract()?;
             adapters.push(PyModel { name, facts });
         }
         let refs: Vec<&dyn Model> = adapters.iter().map(|a| a as &dyn Model).collect();
-        strata_k::attach_models(&mut self.checked, &refs).map_err(runtime_err)
+        strata_k::attach_models(&mut self.checked, &refs).map_err(runtime_err)?;
+        self.models_attached = true;
+        Ok(())
     }
 
     /// Resolve every `input pred from "file"` declaration relative to `base`
@@ -344,6 +363,7 @@ fn compile(src: &str) -> PyResult<Program> {
         Ok(checked) => Ok(Program {
             high: prog,
             checked,
+            models_attached: false,
         }),
         Err(diags) => Err(PyValueError::new_err(diags.render_text(src))),
     }

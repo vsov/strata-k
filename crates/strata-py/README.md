@@ -29,9 +29,6 @@ print(p.provenance())                     # proof DNFs, signed literals
 (Recursive `Prov` is refused exactly — E1008; `Prov_k(k)` keeps the top-k
 proofs, whose compiled union is a guaranteed lower bound.)
 
-```python
-```
-
 - **Values**: symbols ⇄ `str`, integers ⇄ `int`; compound `@terms` values come
   out rendered (`"f(a, 3)"`). Trop rows carry a trailing weight.
 - **Models in-process**: `p.attach_models({"name": callable})` — the callable's
