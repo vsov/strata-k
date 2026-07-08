@@ -1,0 +1,18 @@
+% Routing over the tropical semiring: cheapest cost between any two nodes of
+% a 8x8 grid (224+ weighted links, both directions, plus express links from
+% the hub). Change one word — Bool to Trop — and the same transitive-closure
+% rules compute shortest paths instead of reachability; ⊕ = min does the rest.
+
+domain node.
+
+pred link(node, node): Trop.
+input link from "links.tsv".
+
+pred route(node, node): Trop.
+route(X, Y) :- link(X, Y).
+route(X, Z) :- link(X, Y), route(Y, Z).
+
+% `strata run` prints the whole closed relation — all 64x64 cheapest costs.
+% Three pairs worth reading in the dump: route(n0_0, n7_7) = 5 (the express
+% link wins outright), route(n0_0, n4_4) = 2, and route(n7_7, n0_0) — the
+% way back has no express link, so it pays the full grid fare.

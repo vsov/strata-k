@@ -89,6 +89,12 @@ path(b, d)
 path(c, d)
 ```
 
+Past the syntax examples, [examples/workloads/](examples/workloads/README.md)
+holds data-driven end-to-end programs — an AML ownership screen (soft model
+flags, `Prov_k` pedigrees, gradients, negation over soft evidence) and
+all-pairs cheapest-cost routing (Trop) — with every quoted number pinned in CI
+(`crates/strata-cli/tests/workloads.rs`).
+
 ## The language
 
 Grammar priority: **optimized for LLMs to write**, human readability second.

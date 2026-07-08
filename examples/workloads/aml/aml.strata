@@ -1,0 +1,48 @@
+% AML ownership screen — the workload version of the book's running example.
+%
+% Certain facts: the corporate registry (who exists, who owns whom, who is
+% sanctioned). Soft facts: a model's suspicion flags, loaded with their
+% confidences. Rules derive control and an investigation set with full
+% pedigrees; `cleared` shows stratified negation over *soft-derived* evidence
+% (the complement of the investigation pedigree, exactly).
+
+domain firm.
+
+pred entity(firm): Bool.
+pred owns(firm, firm): Bool.
+pred sanctioned(firm): Bool.
+neural flag(firm) from model "aml_gnn".
+
+input entity from "companies.tsv".
+input owns from "ownership.tsv".
+input sanctioned from "sanctions.tsv".
+input flag from "flags.tsv".
+
+% Control: direct or via a chain of holdings. Certain — registry facts only.
+pred control(firm, firm): Bool.
+control(X, Y) :- owns(X, Y).
+control(X, Z) :- owns(X, Y), control(Y, Z).
+
+% Investigate a firm if the model flagged it, if it controls a flagged firm
+% (your subsidiary launders, you answer), or if a sanctioned firm controls it.
+pred investigate(firm): Prov_k(4).
+investigate(X) :- flag(X).
+investigate(X) :- control(X, Y), flag(Y).
+investigate(X) :- control(Y, X), sanctioned(Y).
+
+% Cleared = listed and NOT under investigation: negation over the soft-derived
+% pedigree — its probability is the exact complement of the proofs above.
+pred cleared(firm): Prov_k(4).
+cleared(X) :- entity(X), not investigate(X).
+
+% The holding of pyramid 0 reaches four flagged firms (its own ops plus
+% cross-pyramid stakes) — shared evidence, several proofs, one marginal, and
+% the gradient says which flag would move it most. indie0 has no exposure at
+% all (cleared with certainty); indie7 is flagged at 0.86, so its clearance
+% is the exact complement, 0.14. A sanctions-controlled firm like g4_op1 is
+% investigated with certainty — its `cleared` tuple has probability zero and
+% is not derived at all.
+?prob investigate(g0_hold).
+?grad investigate(g0_hold).
+?prob cleared(indie0).
+?prob cleared(indie7).
