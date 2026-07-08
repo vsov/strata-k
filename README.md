@@ -5,10 +5,12 @@
 
 A stratified, semiring-parameterized Datalog and its execution engine — the
 symbolic core of a neuro-symbolic logic system. This repository is the CPU
-reference stack — frontend, IR, checker, interpreter, and the probabilistic
-(режим B) and answer-set layers — which is the stable surface. The GPU engine,
-knowledge compilation, and incremental provenance exist beside it as
-explicitly experimental surfaces (see the
+reference stack: frontend, IR, checker, interpreter, and the probabilistic
+(режим B) and answer-set layers. The **stable surface** is the deductive and
+probabilistic facade — Bool/Trop, `?prob`/`?grad`, `Prov`/`Prov_k`, `@terms`,
+loaders, the CLI and the `strata-k`/Python facades. The answer-set (`@asp`)
+island, the GPU engine, knowledge compilation, and incremental provenance
+exist beside it as **explicitly experimental** surfaces (see the
 [Stability section](docs/language.md#stability) and
 [ARCHITECTURE.md](ARCHITECTURE.md)).
 

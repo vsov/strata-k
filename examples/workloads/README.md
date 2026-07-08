@@ -7,7 +7,9 @@ Data-driven, end-to-end programs — bigger than the syntax examples one level
 up, small enough to read whole. Each directory holds a program, its TSV data,
 and the deterministic `gen.py` that produced the data. "Committed data == the
 script's output" is a **checked fact, not a claim**: CI re-runs each generator
-into a temp dir and byte-compares
+into a temp dir and compares the data sets **both ways** — every generated file
+byte-equals its committed twin, and no committed data file survives that the
+generator no longer produces
 (`committed_workload_data_equals_generator_output`).
 
 Every number quoted below is **pinned in CI**

@@ -67,10 +67,18 @@ fn workloads_run_and_print_their_pinned_lines() {
 
 /// The workloads README claims "committed data == the generator's output".
 /// This test makes that a checked fact, not a manual claim: each gen.py is
-/// copied to a temp dir, run there (it writes next to itself), and every file
-/// it produced must byte-equal the committed one.
+/// copied to a temp dir, run there (it writes next to itself), and the set of
+/// generated data files must match the committed data set **both ways** — every
+/// generated file byte-equals its committed twin, and no committed data file is
+/// left that the generator no longer produces (a stale file would otherwise
+/// survive silently). Non-data companions are excluded by an allowlist.
 #[test]
 fn committed_workload_data_equals_generator_output() {
+    // Files that live in a workload dir but are not generator output.
+    let is_companion = |name: &std::ffi::OsStr| {
+        let n = name.to_string_lossy();
+        n == "gen.py" || n == "README.md" || n.ends_with(".strata")
+    };
     let python = "python3";
     if Command::new(python).arg("--version").output().is_err() {
         panic!("python3 is required to verify the workload generators");
@@ -90,9 +98,12 @@ fn committed_workload_data_equals_generator_output() {
             "gen.py for `{dir}` failed:\n{}",
             String::from_utf8_lossy(&out.stderr),
         );
+
+        // Generated data files (the temp dir also holds the copied gen.py).
+        let mut generated_names: Vec<String> = Vec::new();
         for entry in fs::read_dir(&tmp).expect("read temp dir") {
             let name = entry.expect("entry").file_name();
-            if name == "gen.py" {
+            if is_companion(&name) {
                 continue;
             }
             let generated = fs::read(tmp.join(&name)).expect("read generated");
@@ -103,6 +114,19 @@ fn committed_workload_data_equals_generator_output() {
                 generated, committed,
                 "committed {dir}/{name:?} differs from the generator's output — \
                  regenerate or update gen.py",
+            );
+            generated_names.push(name.to_string_lossy().into_owned());
+        }
+
+        // The other direction: no committed data file the generator dropped.
+        for entry in fs::read_dir(&src_dir).expect("read workload dir") {
+            let name = entry.expect("entry").file_name();
+            if is_companion(&name) {
+                continue;
+            }
+            assert!(
+                generated_names.contains(&name.to_string_lossy().into_owned()),
+                "committed {dir}/{name:?} is not produced by gen.py — a stale data file",
             );
         }
         let _ = fs::remove_dir_all(&tmp);
