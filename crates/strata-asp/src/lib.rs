@@ -1,5 +1,10 @@
 //! `strata-asp` — a reference answer-set (stable model) solver. [Phase 5, spec 5]
 //!
+//! **Stability: experimental.** Declarations are enforced (`E1001`/`E1005`/
+//! `E1011`/`E1012`), but the `@asp` surface is narrower than the deductive core
+//! and still settling. See the Stability section of `docs/language.md` for the
+//! stable kernel.
+//!
 //! The obviously-correct reference (the ASP analogue of the naive `T_P` oracle),
 //! against which a future clasp-backed / GPU-grounded solver must agree:
 //!

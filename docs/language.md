@@ -485,6 +485,39 @@ machine-applicable fix. The front-end owns the `E0xxx` range, the checker the
 `strata check --error-format=json` emits the same diagnostics as machine-readable
 JSON.
 
+## Stability
+
+Not every surface is equally settled. The **stable kernel** — the part whose
+behavior and public API this project intends to keep — is:
+
+- the `strata` CLI (`check` / `run` / `fmt` / `ir`) and its output format;
+- the `strata_k` Python bridge (`compile`, `eval`, `prob_query`, `grad_query`,
+  `provenance`, `attach_models`, `load_inputs`) and the `strata-k` Rust facade;
+- the `Bool` and `Trop` semirings;
+- probabilistic evaluation (режим B): `::` facts, `?prob` / `?grad`, and
+  `Prov` / `Prov_k` provenance — exact marginals and gradients, with the
+  documented budgets and `Prov_k` lower bounds;
+- structural terms (`@terms`) with the depth-bounded, sound-possibly-incomplete
+  status line;
+- the `input` loaders (TSV / CSV / JSON) and plain `?q(...)` output filters;
+- the worked examples: the two [workloads](../examples/workloads/README.md) and
+  the [Python recipe](../examples/python/README.md), all pinned in CI.
+
+Each of these is backed by a differential oracle and/or a pinned CI check.
+
+**Experimental** — useful and tested, but the API or semantics may still move,
+so depend on them with that in mind:
+
+- **`@asp`** (answer-set / stable-model island): declarations are enforced,
+  but the surface it exposes is narrower than the deductive core and still
+  settling.
+- **`IncProv`** (incremental provenance maintenance): the insert/delete
+  contract is young (its index contract was just corrected); recapture is the
+  conservative fallback.
+- **the GPU engine** (`strata-gpu`, `--features cuda`): bit-exact against the
+  reference oracle, but device-only, and its perf numbers are scoped to one
+  box (see the crate README) — not a portable throughput promise.
+
 ## Not implemented in Phase 0
 
 Nothing. Every construct in the shipped grammar now executes — `Prov`/`Prov_k`

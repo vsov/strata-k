@@ -1,6 +1,11 @@
 //! Incremental provenance maintenance — soft facts arrive and leave, proof
 //! DNFs update without recapturing from scratch. [спека §6, режим-B слой]
 //!
+//! **Stability: experimental.** The insert/delete contract is young (its index
+//! contract was recently corrected); full recapture is the conservative
+//! fallback. See the Stability section of `docs/language.md` for the stable
+//! kernel.
+//!
 //! The leaf-level proof representation makes this exact and simple for the
 //! **positive** fragment:
 //!

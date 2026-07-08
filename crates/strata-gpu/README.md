@@ -1,5 +1,10 @@
 # strata-gpu
 
+> **Stability: experimental.** Bit-exact against the reference oracle, but
+> device-only (`--features cuda`), and its perf numbers are scoped to one box
+> (below) — not a portable throughput promise. See the Stability section of
+> [docs/language.md](../../docs/language.md#stability) for the stable kernel.
+
 The GPU execution engine for Strata/K — spec **Phase 1** (режим A: idempotent
 semirings on the GPU), **Phase 2** (worst-case-optimal joins) and the **Phase 5**
 GPU grounding-simplification for ASP. CUDA kernels
