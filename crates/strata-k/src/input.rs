@@ -62,6 +62,13 @@ pub fn load_inputs(program: &Program, checked: &mut Checked, base: &Path) -> Res
                     instead)"
             .to_string());
     }
+    // Accumulate into local buffers and commit only after every file and row
+    // has validated: a failure partway through (e.g. the second `input` file is
+    // missing) must leave `checked` untouched, so a retry after fixing the file
+    // does not double the rows already read. (Dictionary interning during the
+    // scan is idempotent, so an aborted load leaving extra symbols is harmless.)
+    let mut new_edb: Vec<GroundFact> = Vec::new();
+    let mut new_prob_edb: Vec<(String, Vec<GroundVal>, f64)> = Vec::new();
     for item in &program.items {
         let ItemKind::Input(inp) = &item.node else {
             continue;
@@ -164,17 +171,17 @@ pub fn load_inputs(program: &Program, checked: &mut Checked, base: &Path) -> Res
                 if !(0.0..=1.0).contains(&p) {
                     return Err(at(format!("probability {p} is outside [0, 1]")));
                 }
-                checked.prob_edb.push((inp.pred.clone(), args, p));
+                new_prob_edb.push((inp.pred.clone(), args, p));
             } else if is_trop {
                 let w = trailing_i64(&row[arity])
                     .ok_or_else(|| at(format!("`{}` needs a trailing integer weight", inp.pred)))?;
-                checked.edb.push(GroundFact {
+                new_edb.push(GroundFact {
                     pred: inp.pred.clone(),
                     args,
                     weight: Some(Weight::Finite(w)),
                 });
             } else {
-                checked.edb.push(GroundFact {
+                new_edb.push(GroundFact {
                     pred: inp.pred.clone(),
                     args,
                     weight: None,
@@ -182,6 +189,9 @@ pub fn load_inputs(program: &Program, checked: &mut Checked, base: &Path) -> Res
             }
         }
     }
+    // Every file and row validated — commit atomically.
+    checked.edb.extend(new_edb);
+    checked.prob_edb.extend(new_prob_edb);
     checked.inputs_loaded = true;
     Ok(())
 }

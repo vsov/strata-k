@@ -249,3 +249,24 @@ def test_second_load_inputs_raises_and_leaves_state_unchanged(tmp_path):
     assert p.prob_facts() == [("flag", ("acme",), 0.9)]
     ((_, prob),) = p.prob_query("investigate")
     assert prob == pytest.approx(0.9)
+
+
+def test_load_inputs_atomic_on_mid_load_failure(tmp_path):
+    (tmp_path / "a.tsv").write_text("acme\t0.9\n")
+    # b.tsv absent: the second input fails mid-load.
+    p = strata_k.compile(
+        "domain firm.\n"
+        'neural flag(firm) from model "m".\n'
+        "pred investigate(firm): Bool.\n"
+        "investigate(X) :- flag(X).\n"
+        'input flag from "a.tsv".\n'
+        'input flag from "b.tsv".\n'
+    )
+    with pytest.raises(ValueError):
+        p.load_inputs(str(tmp_path))
+    # The failed load must have committed nothing — not the acme row from a.tsv.
+    assert p.prob_facts() == []
+    # Retry after fixing b.tsv: clean, not doubled.
+    (tmp_path / "b.tsv").write_text("globex\t0.2\n")
+    p.load_inputs(str(tmp_path))
+    assert p.prob_facts() == [("flag", ("acme",), 0.9), ("flag", ("globex",), 0.2)]

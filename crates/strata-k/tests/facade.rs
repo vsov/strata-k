@@ -212,6 +212,41 @@ fn second_load_inputs_fails_and_leaves_state_unchanged() {
 }
 
 #[test]
+fn load_inputs_is_atomic_on_mid_load_failure() {
+    use strata_k::load_inputs;
+    let dir = std::env::temp_dir().join(format!("strata_k_atomic_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.tsv"), "acme\t0.9\n").unwrap();
+    // b.tsv deliberately absent — the second `input` fails mid-load.
+    let src = concat!(
+        "domain firm.\n",
+        "neural flag(firm) from model \"m\".\n",
+        "pred investigate(firm): Bool.\n",
+        "investigate(X) :- flag(X).\n",
+        "input flag from \"a.tsv\".\n",
+        "input flag from \"b.tsv\".\n",
+    );
+    let (prog, d) = strata_k::parse(src);
+    assert!(!d.has_errors());
+    let mut checked = strata_check::check_program(&prog).expect("check");
+    // First attempt fails on the missing b.tsv — and must leave NOTHING behind,
+    // not the rows already read from a.tsv (else a retry would double them).
+    let err = load_inputs(&prog, &mut checked, &dir).expect_err("missing b.tsv");
+    assert!(err.contains("b.tsv"), "{err}");
+    assert!(
+        checked.prob_edb.is_empty(),
+        "a failed load must not partially mutate: {:?}",
+        checked.prob_edb
+    );
+    assert!(!checked.inputs_loaded, "a failed load must not mark loaded");
+
+    // Provide b.tsv and retry: exactly one acme + one globex, not doubled.
+    std::fs::write(dir.join("b.tsv"), "globex\t0.2\n").unwrap();
+    load_inputs(&prog, &mut checked, &dir).expect("retry loads");
+    assert_eq!(checked.prob_edb.len(), 2, "retry is clean, not doubled");
+}
+
+#[test]
 fn wrong_arity_model_output_is_a_typed_error() {
     struct Fat;
     impl Model for Fat {
