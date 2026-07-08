@@ -5,10 +5,12 @@
 
 A stratified, semiring-parameterized Datalog and its execution engine — the
 symbolic core of a neuro-symbolic logic system. This repository is the CPU
-reference stack: frontend, IR, checker, interpreter, and reference
-implementations of the probabilistic (режим B) and answer-set layers. The GPU
-engine and the knowledge-compilation / incremental optimizations are later
-phases (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+reference stack — frontend, IR, checker, interpreter, and the probabilistic
+(режим B) and answer-set layers — which is the stable surface. The GPU engine,
+knowledge compilation, and incremental provenance exist beside it as
+explicitly experimental surfaces (see the
+[Stability section](docs/language.md#stability) and
+[ARCHITECTURE.md](ARCHITECTURE.md)).
 
 > **Status.** The executable core runs end-to-end: `text → parse → check →
 > Core-IR → interpret → result`. Positive Datalog, stratified negation, and

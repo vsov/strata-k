@@ -52,6 +52,10 @@ pub struct Checked {
     /// semiring (Prov/Prov_k evaluate set-wise as Bool); the CLI reads this map
     /// to route Prov/Prov_k predicates through provenance capture + the circuit.
     pub annotations: HashMap<String, Annotation>,
+    /// Set by `strata_k::attach_models` on success: a second attach would
+    /// append the same soft facts again and silently shift every marginal, so
+    /// the facade refuses it. Fresh from `check_program`, always `false`.
+    pub models_attached: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -374,6 +378,7 @@ pub fn check_program(program: &Program) -> Result<Checked, Diagnostics> {
         neural,
         terms,
         annotations,
+        models_attached: false,
     })
 }
 

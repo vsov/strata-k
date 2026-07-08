@@ -205,6 +205,36 @@ fn wrong_arity_model_output_is_a_typed_error() {
     ));
 }
 
+#[test]
+fn second_attach_raises_instead_of_duplicating() {
+    struct One;
+    impl Model for One {
+        fn name(&self) -> &str {
+            "risk_gnn"
+        }
+        fn soft_facts(&self, dict: &mut SymbolDict) -> Vec<(String, Tuple, f64)> {
+            vec![(
+                "flag".to_string(),
+                vec![GroundVal::Sym(dict.intern("acme"))],
+                0.9,
+            )]
+        }
+    }
+    let mut p = compile(NEURAL_SRC).expect("checks");
+    attach_models(&mut p, &[&One]).expect("first attach");
+    let before = p.prob_edb.clone();
+    // The round trip an external caller will write: attach twice by mistake.
+    // Silently doubling prob_edb here would shift every marginal (0.9 -> 0.99).
+    assert!(matches!(
+        attach_models(&mut p, &[&One]),
+        Err(ModelError::AlreadyAttached)
+    ));
+    assert_eq!(
+        p.prob_edb, before,
+        "failed second attach left nothing behind"
+    );
+}
+
 // --- the in-process neural boundary -------------------------------------------
 
 /// A stand-in production model: scores firms from an in-memory feature table.

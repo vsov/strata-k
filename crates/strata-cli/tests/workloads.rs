@@ -65,6 +65,50 @@ fn workloads_run_and_print_their_pinned_lines() {
     }
 }
 
+/// The workloads README claims "committed data == the generator's output".
+/// This test makes that a checked fact, not a manual claim: each gen.py is
+/// copied to a temp dir, run there (it writes next to itself), and every file
+/// it produced must byte-equal the committed one.
+#[test]
+fn committed_workload_data_equals_generator_output() {
+    let python = "python3";
+    if Command::new(python).arg("--version").output().is_err() {
+        panic!("python3 is required to verify the workload generators");
+    }
+    for (dir, _, _) in WORKLOADS {
+        let src_dir = workloads_dir().join(dir);
+        let tmp = std::env::temp_dir().join(format!("strata-workload-gen-{dir}"));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("create temp dir");
+        fs::copy(src_dir.join("gen.py"), tmp.join("gen.py")).expect("copy gen.py");
+        let out = Command::new(python)
+            .arg(tmp.join("gen.py"))
+            .output()
+            .expect("run gen.py");
+        assert!(
+            out.status.success(),
+            "gen.py for `{dir}` failed:\n{}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        for entry in fs::read_dir(&tmp).expect("read temp dir") {
+            let name = entry.expect("entry").file_name();
+            if name == "gen.py" {
+                continue;
+            }
+            let generated = fs::read(tmp.join(&name)).expect("read generated");
+            let committed = fs::read(src_dir.join(&name)).unwrap_or_else(|_| {
+                panic!("`{dir}` generator produced {name:?} but it is not committed")
+            });
+            assert_eq!(
+                generated, committed,
+                "committed {dir}/{name:?} differs from the generator's output — \
+                 regenerate or update gen.py",
+            );
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+}
+
 /// No silent gaps: every directory under examples/workloads must be pinned
 /// above. A new workload fails this until its output lines are classified.
 #[test]

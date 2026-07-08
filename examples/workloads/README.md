@@ -5,8 +5,10 @@
 
 Data-driven, end-to-end programs — bigger than the syntax examples one level
 up, small enough to read whole. Each directory holds a program, its TSV data,
-and the deterministic `gen.py` that produced the data (committed data == the
-script's output; the script exists for transparency, CI does not re-run it).
+and the deterministic `gen.py` that produced the data. "Committed data == the
+script's output" is a **checked fact, not a claim**: CI re-runs each generator
+into a temp dir and byte-compares
+(`committed_workload_data_equals_generator_output`).
 
 Every number quoted below is **pinned in CI**
 (`crates/strata-cli/tests/workloads.rs`): the test runs the real binary and

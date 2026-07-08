@@ -1,3 +1,7 @@
+// The README doubles as the crate doc page; its ```rust block is a doctest,
+// so the first example a user sees cannot silently stop compiling.
+#![doc = include_str!("../README.md")]
+
 //! `strata-k` — the library facade over the Strata/K reference stack.
 //!
 //! The CLI is one consumer of the engine; this crate is the front door for the
@@ -213,6 +217,11 @@ pub enum ModelError {
     },
     /// A model produced a probability outside [0, 1].
     BadProbability { model: String, p: f64 },
+    /// `attach_models` was already called for this program: a second call
+    /// would append the same soft facts again and silently shift every
+    /// marginal — the one misuse that would corrupt answers instead of
+    /// erroring.
+    AlreadyAttached,
 }
 
 impl std::fmt::Display for ModelError {
@@ -239,6 +248,11 @@ impl std::fmt::Display for ModelError {
             ModelError::BadProbability { model, p } => {
                 write!(f, "model {model:?} produced probability {p} outside [0, 1]")
             }
+            ModelError::AlreadyAttached => write!(
+                f,
+                "attach_models was already called for this program; a second call would \
+                 duplicate the soft facts (compile a fresh program instead)"
+            ),
         }
     }
 }
@@ -248,8 +262,13 @@ impl std::error::Error for ModelError {}
 /// Run every model's forward pass and append the outputs to the program's
 /// probabilistic EDB — the facts are *computed*, not pasted. Call before
 /// [`prob_query`]/[`grad_query`]/[`provenance`]. Every `from model "m"`
-/// declaration must be covered; extra models are ignored.
+/// declaration must be covered; extra models are ignored. A second call
+/// raises [`ModelError::AlreadyAttached`]: it would append the same soft
+/// facts again and silently shift every marginal.
 pub fn attach_models(checked: &mut Checked, models: &[&dyn Model]) -> Result<(), ModelError> {
+    if checked.models_attached {
+        return Err(ModelError::AlreadyAttached);
+    }
     let by_name: HashMap<&str, &&dyn Model> = models.iter().map(|m| (m.name(), m)).collect();
     // The predicates each model may speak for, with models kept in the
     // program's declaration order — so `prob_edb` (and therefore gradient
@@ -304,6 +323,7 @@ pub fn attach_models(checked: &mut Checked, models: &[&dyn Model]) -> Result<(),
         }
     }
     checked.prob_edb.extend(new_facts);
+    checked.models_attached = true;
     Ok(())
 }
 
