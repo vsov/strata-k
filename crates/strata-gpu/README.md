@@ -53,6 +53,18 @@ bit-exact against an independent oracle:
   - Bool alone reaches 100M edges → 300M closure (~9.1 s) — the Trop closure of
     that size overflows 24 GB (its kv-sort still pads to a power of two).
   Throughput rises with size (better GPU saturation).
+- **GPU vs the reference engine** (`examples/race.rs`): the *same* TC/SSSP
+  program run through both the GPU kernels and `strata-eval`'s semi-naive CPU
+  interpreter, sizes asserted equal on both sides so no ratio is ever quoted
+  off a wrong answer. On a 100k-edge chain-union (300k closure): Bool GPU
+  ~0.20 s vs CPU ~415 s, Trop GPU ~0.013 s vs CPU ~427 s. **Read this as why
+  the GPU backend exists, not as a portable "N× faster" number:** the
+  reference interpreter is deliberately the *obviously-correct* oracle (I5),
+  not an optimized engine — its join is a naive nested loop, so a closure this
+  size already takes minutes on the CPU while the GPU finishes in
+  milliseconds. An optimized CPU Datalog (Soufflé) would close most of that
+  gap; the honest claim is "режим A needs a device backend to stay
+  interactive at scale," not a headline multiplier.
 - **WCOJ / skew** (`examples/tri.rs`, `tests/wcoj_diff.rs`): triangle + 4-clique
   counts bit-exact vs O(n³)/O(n⁴) brute force + complete-graph closed forms. On a
   9.6M-edge power-law graph the binary-join intermediate is Σd² = 3.1×10¹²

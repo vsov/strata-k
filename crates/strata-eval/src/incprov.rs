@@ -114,8 +114,10 @@ impl IncProv {
         self.prob.iter().enumerate().filter(|(i, _)| self.alive[*i])
     }
 
-    /// Insert a new soft fact; returns its leaf index. Monotone: seed the new
-    /// leaf's proof and finish the fixpoint from the current state.
+    /// Insert a new soft fact; returns its zero-based leaf index — the value
+    /// [`Self::delete_soft`] takes and [`Self::soft_facts`] yields (the proof
+    /// literal is `+(index+1)`). Monotone: seed the new leaf's proof and
+    /// finish the fixpoint from the current state.
     ///
     /// On `Err` (budget), the maintainer may hold a partially updated state —
     /// treat it as poisoned and rebuild with [`IncProv::new`].
@@ -130,7 +132,7 @@ impl IncProv {
         }
         self.prob.push((pred.to_string(), tuple.clone(), p));
         self.alive.push(true);
-        let leaf = self.prob.len(); // literal is +(index+1)
+        let leaf = self.prob.len() - 1; // zero-based; literal is +(leaf+1)
         let set = self
             .db
             .rels
@@ -138,7 +140,7 @@ impl IncProv {
             .or_default()
             .entry(tuple)
             .or_default();
-        insert_minimal(set, Proof::from([leaf as i64]));
+        insert_minimal(set, Proof::from([(leaf + 1) as i64]));
         saturate(
             &mut self.db,
             &self.core,
@@ -320,7 +322,10 @@ mod tests {
         let _l2 = inc.insert_soft("edge", vec![sym(0), sym(2)], 0.3).unwrap();
         assert_matches_recapture(&inc, &modes);
 
-        inc.delete_soft(l1 - 1).unwrap(); // delete edge(1,2): leaf index = l1-1
+        // The round trip the first external caller will write: delete what
+        // insert returned. (This line once needed a manual `- 1` — the
+        // index-contract defect an external review caught.)
+        inc.delete_soft(l1).unwrap(); // delete edge(1,2)
         assert_matches_recapture(&inc, &modes);
         // path(0,2) survives via the direct soft edge; the 2-hop proof is gone.
         let ps = &inc.db.rels["path"][&vec![sym(0), sym(2)]];
@@ -423,7 +428,7 @@ mod tests {
                     let y = ((x as u64 + 1 + rng() % (nodes - 1)) % nodes) as u32;
                     let p = (rng() % 1001) as f64 / 1000.0;
                     let leaf = inc.insert_soft("edge", vec![sym(x), sym(y)], p).unwrap();
-                    live.push(leaf - 1);
+                    live.push(leaf);
                 } else {
                     let pick = (rng() % live.len() as u64) as usize;
                     let leaf = live.swap_remove(pick);

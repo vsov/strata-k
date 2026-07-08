@@ -20,7 +20,11 @@ cuda = ["dep:cudarc"]
 cudarc = { version = "0.12", default-features = false, features = ["cuda-11080", "driver", "nvrtc", "std"], optional = true }
 
 [dev-dependencies]
-# Independent CPU oracle for the differential test lives inline; no sibling dep.
+# Independent CPU oracles for the differential tests live inline; no sibling
+# dep there. strata-eval/-ir below serve ONLY examples/race.rs — the perf race
+# against the reference engine, never a correctness oracle.
+strata-eval = { path = "../strata-eval" }
+strata-ir = { path = "../strata-ir" }
 
 # GPU kernel launches are inherently `unsafe` (cudarc), so this crate opts out of
 # the workspace-wide `unsafe_code = "forbid"` (the only crate that does — the

@@ -329,6 +329,8 @@ name = "strata-gpu"
 version = "0.1.0"
 dependencies = [
  "cudarc",
+ "strata-eval",
+ "strata-ir",
 ]
 
 [[package]]
