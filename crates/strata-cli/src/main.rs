@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::process::ExitCode as ProcExit;
 
-use strata_check::check_program;
+use strata_check::{check_program, QuerySpec};
 use strata_eval::{run_semi_naive, run_terms, Ann, GroundVal};
 use strata_front::{format, parse, print_program};
 use strata_ir::core::CoreProgram;
@@ -236,12 +236,21 @@ fn cmd_run(args: &[String]) -> Code {
         run_prob(&mut checked, &facts).map(|out| append_terms_status(out, &checked.terms))
     } else {
         let semi = has_flag(args, "--semi-naive");
+        // Plain `?q(...)` queries turn a plain run into a filtered one; with
+        // none, the whole database prints as before.
+        let plain: Vec<QuerySpec> = checked
+            .queries
+            .iter()
+            .filter(|q| q.kind == QueryKind::Plain)
+            .cloned()
+            .collect();
         run_program(
             &checked.core,
             &checked.dict,
             &facts,
             semi,
             &mut checked.terms,
+            &plain,
         )
     };
     match result {
@@ -343,6 +352,7 @@ fn run_program(
     facts: &[GroundFact],
     semi_naive: bool,
     terms: &mut TermTable,
+    plain_queries: &[QuerySpec],
 ) -> Result<String, String> {
     let edb: Vec<(&str, Vec<GroundVal>, Ann)> = facts
         .iter()
@@ -369,7 +379,7 @@ fn run_program(
     } else {
         run_terms(core, &edb, terms).map_err(|e| e.to_string())?
     };
-    let mut out = render_db(&db, dict, terms);
+    let mut out = render_db(&db, dict, terms, plain_queries);
     if !terms.is_complete() {
         out.push_str(&format!(
             "% status: Sound (possibly incomplete) — {} derivation(s) dropped at depth bound {}\n",
@@ -390,7 +400,63 @@ mod tests {
         assert!(!diags.has_errors(), "{}", diags.render_text(src));
         let mut checked = check_program(&prog).expect("check");
         let edb = checked.edb.clone();
-        run_program(&checked.core, &checked.dict, &edb, semi, &mut checked.terms).expect("eval")
+        run_program(
+            &checked.core,
+            &checked.dict,
+            &edb,
+            semi,
+            &mut checked.terms,
+            &[],
+        )
+        .expect("eval")
+    }
+
+    /// Evaluate, then render through the program's plain `?q(...)` filters.
+    fn eval_filtered(src: &str) -> String {
+        let (prog, diags) = parse(src);
+        assert!(!diags.has_errors(), "{}", diags.render_text(src));
+        let mut checked = check_program(&prog).expect("check");
+        let edb = checked.edb.clone();
+        let plain: Vec<QuerySpec> = checked
+            .queries
+            .iter()
+            .filter(|q| q.kind == QueryKind::Plain)
+            .cloned()
+            .collect();
+        run_program(
+            &checked.core,
+            &checked.dict,
+            &edb,
+            false,
+            &mut checked.terms,
+            &plain,
+        )
+        .expect("eval")
+    }
+
+    #[test]
+    fn plain_query_filters_output() {
+        let base = "\
+pred edge(node, node): Bool.
+pred path(node, node): Bool.
+path(X, Y) :- edge(X, Y).
+path(X, Z) :- edge(X, Y), path(Y, Z).
+edge(a, b).
+edge(b, c).
+edge(c, d).
+";
+        // No query → whole database (path + edge relations, every tuple).
+        let all = eval_filtered(base);
+        assert!(all.contains("edge(a, b)") && all.contains("path(a, d)"));
+
+        // `?path(a, _)` → only path tuples starting at `a`; edge relation and
+        // path(b, _)/path(c, _) are filtered out.
+        let filtered = eval_filtered(&format!("{base}?path(a, _).\n"));
+        assert_eq!(filtered, "path(a, b)\npath(a, c)\npath(a, d)\n");
+
+        // A ground query pins one tuple.
+        let ground = eval_filtered(&format!("{base}?edge(b, c).\n"));
+        assert_eq!(ground, "edge(b, c)\n");
     }
 
     const TC: &str = "\
@@ -634,6 +700,7 @@ nat(succ(X)) :- nat(X).
             &checked.edb.clone(),
             false,
             &mut checked.terms,
+            &[],
         )
         .expect("run");
         assert!(out.contains("nat(zero)"), "{out}");
@@ -704,6 +771,7 @@ unboxed(Y) :- boxed(box(Y)).
             &checked.edb.clone(),
             false,
             &mut checked.terms,
+            &[],
         )
         .expect("run");
         assert!(out.contains("boxed(box(a))"), "{out}");
@@ -844,6 +912,7 @@ b() :- not a().
                 &facts,
                 false,
                 &mut checked.terms,
+                &[],
             )
             .expect("eval")
         }
@@ -937,6 +1006,7 @@ path(X, Z) :- edge(X, Y), path(Y, Z).
             &facts,
             false,
             &mut checked.terms,
+            &[],
         )
         .expect("run");
 

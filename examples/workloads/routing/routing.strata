@@ -12,7 +12,10 @@ pred route(node, node): Trop.
 route(X, Y) :- link(X, Y).
 route(X, Z) :- link(X, Y), route(Y, Z).
 
-% `strata run` prints the whole closed relation — all 64x64 cheapest costs.
-% Three pairs worth reading in the dump: route(n0_0, n7_7) = 5 (the express
-% link wins outright), route(n0_0, n4_4) = 2, and route(n7_7, n0_0) — the
-% way back has no express link, so it pays the full grid fare.
+% The full closure is all 64x64 cheapest costs; these plain queries filter the
+% run down to three pairs worth reading: the express link wins outright to the
+% far corner (5), n4_4 is even cheaper (2), and the way back pays the full grid
+% fare because no express link runs toward the hub.
+?route(n0_0, n7_7).
+?route(n0_0, n4_4).
+?route(n7_7, n0_0).

@@ -41,8 +41,8 @@ probability zero and is not derived at all.
 An 8×8 grid, 228 weighted links (both directions), plus express links out of
 the hub `n0_0`. The same two transitive-closure rules as reachability, with
 one word changed — `Bool` → `Trop` — compute every pair's cheapest cost
-(⊕ = min, ⊗ = +). The run prints the whole closed relation (64×64 pairs);
-three lines worth finding in it:
+(⊕ = min, ⊗ = +). The full closure is 64×64 pairs; three plain `?route(...)`
+queries filter the run down to the ones worth reading:
 
 ```
 route(n0_0, n7_7) = 5     % the express link wins outright

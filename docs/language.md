@@ -143,6 +143,23 @@ body and consumed by the aggregate; the remaining head variables are the group
 key. Aggregation is **non-recursive**: an aggregate reads only from lower strata,
 like negation.
 
+## Queries
+
+`strata run` evaluates the program to its least fixpoint and prints the derived
+relations. A plain `?q(...)` query is an **output filter**, not a computation:
+
+```
+?path(a, _).       % print only path tuples whose first argument is a
+?edge(b, c).        % print only the ground tuple edge(b, c) (if derived)
+```
+
+A constant or integer position must match; a variable or `_` position matches
+anything. With **no** `?` query the whole database prints; with one or more,
+only the queried predicates print, and only their matching tuples. (The
+probabilistic `?prob` / differentiable `?grad` forms are computations, not
+filters — see [Probabilistic queries](#probabilistic-queries) and
+[Gradient queries](#gradient-queries-grad).)
+
 ## Semirings
 
 A predicate's semiring is the "arithmetic of inference" — the same rules compute
