@@ -93,7 +93,9 @@ Past the syntax examples, [examples/workloads/](examples/workloads/README.md)
 holds data-driven end-to-end programs — an AML ownership screen (soft model
 flags, `Prov_k` pedigrees, gradients, negation over soft evidence) and
 all-pairs cheapest-cost routing (Trop) — with every quoted number pinned in CI
-(`crates/strata-cli/tests/workloads.rs`).
+(`crates/strata-cli/tests/workloads.rs`). A third recipe,
+[examples/python/](examples/python/README.md), trains a GNN *through* the logic
+layer: the engine's exact gradient flows back into the model's weights.
 
 ## The language
 

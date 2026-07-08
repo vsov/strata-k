@@ -1,3 +1,6 @@
+<!-- The Python neural-symbolic recipe is the third end-to-end example:
+     ../python/README.md (a GNN trained through grad_query). -->
+
 # Workloads
 
 Data-driven, end-to-end programs — bigger than the syntax examples one level
